@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analyse des Données - Conso Energy</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</head>
+<body>
+    <div class="container mt-5">
+        <h1 class="mb-4">Analyse des Données</h1>
+        
+        <!-- Sélection du fichier -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Sélection du fichier</h5>
+            </div>
+            <div class="card-body">
+                <select id="fileSelect" class="form-select mb-3">
+                    <option value="">Sélectionnez un fichier normalisé...</option>
+                </select>
+                <div class="row mb-4">
+                    <div class="col">
+                        <button id="visualizeBtn" class="btn btn-primary">
+                            <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                            Visualiser les distributions
+                        </button>
+                        <button id="analyzeBtn" class="btn btn-info">
+                            <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                            Analyser les transformations
+                        </button>
+                        <button id="correlationBtn" class="btn btn-success">
+                            <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                            Matrice de corrélation
+                        </button>
+                        <button id="fisherBtn" class="btn btn-warning">
+                            <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                            Test de Fisher
+                        </button>
+                        <button id="featureSelectionBtn" class="btn btn-danger">
+                            <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                            Sélection de Features
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Résultats de l'analyse -->
+        <div id="analysisResults" class="card mb-4 d-none">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">Résultats de l'analyse</h5>
+                <div>
+                    <button type="button" class="btn btn-outline-primary btn-sm me-2" id="configureColumnsBtn" disabled>
+                        <i class="fas fa-cog"></i> Configurer les types de colonnes
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6>Statistiques globales</h6>
+                        <p>Nombre total de lignes: <span id="totalRows">-</span></p>
+                        <p>Lignes avec valeurs manquantes: <span id="rowsWithMissing">-</span></p>
+                    </div>
+                    <div class="col-md-6">
+                        <h6>Valeurs manquantes par colonne</h6>
+                        <div id="columnStats" class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Colonne</th>
+                                        <th>Manquants</th>
+                                        <th>Pourcentage</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal pour les types de colonnes -->
+        <div class="modal fade" id="columnTypesModal" tabindex="-1" aria-labelledby="columnTypesModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="columnTypesModalLabel">Configuration des types de colonnes</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fermer"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="table-responsive">
+                            <table class="table table-sm" id="columnTypesTable">
+                                <thead>
+                                    <tr>
+                                        <th>Colonne</th>
+                                        <th>Type</th>
+                                        <th>Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fermer</button>
+                        <button type="button" class="btn btn-primary" id="saveColumnTypes">
+                            <span class="spinner-border spinner-border-sm d-none" role="status"></span>
+                            Enregistrer
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal des visualisations -->
+        <div class="modal fade" id="visualizationsModal" tabindex="-1" aria-labelledby="visualizationsModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-xl">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="visualizationsModalLabel">Visualisation des distributions</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fermer"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="plotsContainer">
+                            <!-- Les visualisations seront insérées ici -->
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fermer</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Traitement des valeurs manquantes -->
+        <div id="treatmentSection" class="card mb-4 d-none">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Traitement des valeurs manquantes</h5>
+            </div>
+            <div class="card-body">
+                <form id="treatmentForm">
+                    <div class="mb-3">
+                        <label class="form-label">Méthode de traitement</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="method" id="methodMean" value="mean">
+                            <label class="form-check-label" for="methodMean">
+                                Moyenne
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="method" id="methodMedian" value="median">
+                            <label class="form-check-label" for="methodMedian">
+                                Médiane
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="method" id="methodDrop" value="drop">
+                            <label class="form-check-label" for="methodDrop">
+                                Supprimer les lignes
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="method" id="methodCustom" value="custom">
+                            <label class="form-check-label" for="methodCustom">
+                                Valeur personnalisée
+                            </label>
+                        </div>
+                    </div>
+
+                    <div id="customValueSection" class="mb-3 d-none">
+                        <label for="customValue" class="form-label">Valeur personnalisée</label>
+                        <input type="number" class="form-control" id="customValue" step="any">
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Portée du traitement</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="action" id="actionGlobal" value="global" checked>
+                            <label class="form-check-label" for="actionGlobal">
+                                Global (toutes les lignes)
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="action" id="actionRow" value="row">
+                            <label class="form-check-label" for="actionRow">
+                                Par ligne
+                            </label>
+                        </div>
+                    </div>
+
+                    <div id="rowIndexSection" class="mb-3 d-none">
+                        <label for="rowIndex" class="form-label">Numéro de ligne</label>
+                        <input type="number" class="form-control" id="rowIndex" min="0">
+                    </div>
+
+                    <button type="submit" class="btn btn-success" id="applyBtn" disabled>
+                        <span class="spinner-border spinner-border-sm d-none" role="status"></span>
+                        Appliquer le traitement
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Modal pour la matrice de corrélation -->
+        <div class="modal fade" id="correlationModal" tabindex="-1" aria-labelledby="correlationModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-xl">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="correlationModalLabel">Matrice de Corrélation</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="correlationMatrixContainer" class="text-center">
+                            <!-- La matrice de corrélation sera affichée ici -->
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fermer</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal pour les résultats du test de Fisher -->
+        <div class="modal fade" id="fisherModal" tabindex="-1" aria-labelledby="fisherModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-xl">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="fisherModalLabel">Résultats des tests de Fisher</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div id="fisherResultsContainer">
+                            <!-- Les résultats seront affichés ici -->
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fermer</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal pour les résultats de la sélection de features -->
+        <div class="modal fade" id="featureSelectionModal" tabindex="-1" aria-labelledby="featureSelectionModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="featureSelectionModalLabel">Résultats de la sélection de features</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <h5>Features sélectionnées :</h5>
+                        <ul id="selected-features-list"></ul>
+                        
+                        <h5>Détails des features numériques :</h5>
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Feature</th>
+                                    <th>Somme des corrélations absolues</th>
+                                    <th>Sélectionnée</th>
+                                </tr>
+                            </thead>
+                            <tbody id="numeric-features-details"></tbody>
+                        </table>
+                        
+                        <h5>Détails des features catégorielles :</h5>
+                        <table class="table">
+                            <thead>
+                                <tr>
+                                    <th>Feature</th>
+                                    <th>Sélectionnée</th>
+                                </tr>
+                            </thead>
+                            <tbody id="categorical-features-details"></tbody>
+                        </table>
+                        
+                        <h5>Résultats des tests statistiques :</h5>
+                        <div id="test-results">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>Variable numérique</th>
+                                        <th>Variable catégorielle</th>
+                                        <th>Type de test</th>
+                                        <th>P-value</th>
+                                        <th>Significatif</th>
+                                        <th>Détails des groupes</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="test-results-details"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fermer</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Variables globales
+        let columnTypesModal;
+        let visualizationsModal;
+        let plotsContainer;
+        let visualizeBtn;
+        let generatedVisualizations = {};
+        let fileSelect;
+        let correlationBtn;
+
+        // Fonction pour le test de Fisher
+        function showFisherTests() {
+            const selectedFile = fileSelect.value;
+            if (!selectedFile) {
+                alert('Veuillez sélectionner un fichier');
+                return;
+            }
+
+            const fisherBtn = document.getElementById('fisherBtn');
+            const spinner = fisherBtn.querySelector('.spinner-border');
+            fisherBtn.disabled = true;
+            spinner.classList.remove('d-none');
+
+            fetch('/get-fisher-tests', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ file_name: selectedFile })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Erreur lors du calcul des tests de Fisher');
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                // Créer une table pour afficher les résultats
+                let table = '<table class="table table-striped table-bordered">';
+                table += '<thead><tr><th>Variable 1</th><th>Variable 2</th><th>Odds Ratio</th><th>P-value</th></tr></thead>';
+                table += '<tbody>';
+                
+                data.results.forEach(result => {
+                    table += `<tr>
+                        <td>${result.variable1}</td>
+                        <td>${result.variable2}</td>
+                        <td>${result.odds_ratio.toFixed(4)}</td>
+                        <td>${result.p_value.toFixed(4)}</td>
+                    </tr>`;
+                });
+                
+                table += '</tbody></table>';
+
+                // Afficher les résultats dans la modal
+                document.getElementById('fisherResultsContainer').innerHTML = table;
+                const fisherModal = new bootstrap.Modal(document.getElementById('fisherModal'));
+                fisherModal.show();
+            })
+            .catch(error => {
+                console.error('Erreur:', error);
+                alert(error.message);
+            })
+            .finally(() => {
+                fisherBtn.disabled = false;
+                spinner.classList.add('d-none');
+            });
+        }
+
+        // Fonction pour analyser les transformations
+        async function analyzeTransformations(columnName) {
+            const fileName = fileSelect.value;
+            if (!fileName) {
+                console.log('Aucun fichier sélectionné');
+                return;
+            }
+
+            try {
+                const response = await fetch('/analyze-distribution', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        file_name: fileName,
+                        column_name: columnName
+                    })
+                });
+
+                if (!response.ok) throw new Error('Erreur lors de l\'analyse des transformations');
+                const data = await response.json();
+                
+                // Afficher les suggestions
+                const suggestionsDiv = document.getElementById(`suggestions-${columnName}`);
+                if (suggestionsDiv) {
+                    suggestionsDiv.innerHTML = `
+                        <div class="card mt-3">
+                            <div class="card-header">
+                                <h6 class="mb-0">Suggestions de transformations pour ${columnName}</h6>
+                            </div>
+                            <div class="card-body">
+                                <p class="card-text">${data.suggestions}</p>
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                console.error('Erreur lors de l\'analyse des transformations:', error);
+                alert('Erreur lors de l\'analyse des transformations');
+            }
+        }
+
+        // Fonction de visualisation
+        async function visualizeData() {
+            console.log('Début de la fonction visualizeData');
+            const fileName = fileSelect.value;
+            if (!fileName) {
+                console.log('Aucun fichier sélectionné');
+                return;
+            }
+
+            const spinner = visualizeBtn.querySelector('.spinner-border');
+            if (!spinner) {
+                console.error('Spinner non trouvé');
+                return;
+            }
+            
+            try {
+                console.log('Désactivation du bouton et affichage du spinner');
+                visualizeBtn.disabled = true;
+                spinner.classList.remove('d-none');
+
+                // Vérifier si la visualisation existe déjà
+                if (generatedVisualizations[fileName]) {
+                    console.log('Utilisation de la visualisation en cache');
+                    plotsContainer.innerHTML = generatedVisualizations[fileName];
+                    visualizationsModal.show();
+                    return;
+                }
+
+                console.log('Récupération des distributions depuis le serveur');
+                const response = await fetch('/get-distributions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ file_name: fileName })
+                });
+
+                if (!response.ok) throw new Error('Erreur lors de la génération des visualisations');
+                const data = await response.json();
+                console.log('Données reçues:', data);
+
+                // Afficher les visualisations
+                console.log('Affichage des visualisations');
+                plotsContainer.innerHTML = '';
+                Object.entries(data.distributions).forEach(([column, plots]) => {
+                    const columnDiv = document.createElement('div');
+                    columnDiv.className = 'mb-4';
+                    columnDiv.innerHTML = `
+                        <h6 class="border-bottom pb-2 mb-3">${column}</h6>
+                        <div class="row">
+                            ${plots.map(plot => `
+                                <div class="col-md-4 mb-3">
+                                    <img src="data:image/png;base64,${plot}" 
+                                         class="img-fluid" 
+                                         alt="Distribution de ${column}">
+                                </div>
+                            `).join('')}
+                        </div>
+                        <div class="text-center mb-3">
+                            <button class="btn btn-primary btn-sm" onclick="analyzeTransformations('${column}')">
+                                <i class="fas fa-magic"></i> Analyser les transformations
+                            </button>
+                        </div>
+                        <div id="suggestions-${column}"></div>
+                    `;
+                    plotsContainer.appendChild(columnDiv);
+                });
+
+                // Stocker la visualisation dans le cache
+                generatedVisualizations[fileName] = plotsContainer.innerHTML;
+                
+                console.log('Affichage du modal');
+                visualizationsModal.show();
+            } catch (error) {
+                console.error('Erreur lors de la visualisation:', error);
+                alert('Erreur lors de la génération des visualisations');
+            } finally {
+                console.log('Réactivation du bouton et masquage du spinner');
+                visualizeBtn.disabled = false;
+                spinner.classList.add('d-none');
+            }
+        }
+
+        // Fonction pour la sélection de features
+        function selectFeatures() {
+            const selectedFile = fileSelect.value;
+            if (!selectedFile) {
+                alert('Veuillez sélectionner un fichier');
+                return;
+            }
+
+            const featureSelectionBtn = document.getElementById('featureSelectionBtn');
+            const spinner = featureSelectionBtn.querySelector('.spinner-border');
+            featureSelectionBtn.disabled = true;
+            spinner.classList.remove('d-none');
+
+            fetch('/select-features', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ file_name: selectedFile })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Erreur lors de la sélection des features');
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                showFeatureSelectionResults(data);
+            })
+            .catch(error => {
+                console.error('Erreur:', error);
+                alert(error.message);
+            })
+            .finally(() => {
+                featureSelectionBtn.disabled = false;
+                spinner.classList.add('d-none');
+            });
+        }
+
+        function showFeatureSelectionResults(data) {
+            console.log('Résultats de la sélection de features:', data);
+            
+            // Afficher les features sélectionnées
+            const selectedFeaturesList = document.getElementById('selected-features-list');
+            selectedFeaturesList.innerHTML = data.selected_features.map(feature => 
+                `<li>${feature}</li>`
+            ).join('');
+            
+            // Afficher les détails des features numériques
+            const numericFeaturesDetails = document.getElementById('numeric-features-details');
+            numericFeaturesDetails.innerHTML = data.numeric_features.all.map(feature => `
+                <tr>
+                    <td>${feature}</td>
+                    <td>${data.numeric_features.correlation_sums[feature].toFixed(3)}</td>
+                    <td>${data.numeric_features.selected.includes(feature) ? 'Oui' : 'Non'}</td>
+                </tr>
+            `).join('');
+            
+            // Afficher les détails des features catégorielles
+            const categoricalFeaturesDetails = document.getElementById('categorical-features-details');
+            categoricalFeaturesDetails.innerHTML = data.categorical_features.all.map(feature => `
+                <tr>
+                    <td>${feature}</td>
+                    <td>${data.categorical_features.selected.includes(feature) ? 'Oui' : 'Non'}</td>
+                </tr>
+            `).join('');
+            
+            // Afficher les résultats des tests statistiques
+            const testResultsDetails = document.getElementById('test-results-details');
+            let testRows = [];
+            
+            data.test_results.forEach(result => {
+                result.tests.forEach(test => {
+                    if (test.p_value !== undefined) {
+                        let groupDetails = '';
+                        if (test.test_type === 'Wilcoxon') {
+                            groupDetails = `Groupe 1: n=${test.group1_size}, moyenne=${test.group1_mean.toFixed(2)}<br>Groupe 2: n=${test.group2_size}, moyenne=${test.group2_mean.toFixed(2)}`;
+                        } else if (test.test_type === 'Kruskal-Wallis') {
+                            groupDetails = test.group_sizes.map((size, i) => 
+                                `Groupe ${i+1}: n=${size}, moyenne=${test.group_means[i].toFixed(2)}`
+                            ).join('<br>');
+                        }
+                        
+                        testRows.push(`
+                            <tr>
+                                <td>${result.feature}</td>
+                                <td>${test.categorical_feature}</td>
+                                <td>${test.test_type}</td>
+                                <td>${test.p_value.toFixed(4)}</td>
+                                <td>${test.significant ? 'Oui' : 'Non'}</td>
+                                <td>${groupDetails}</td>
+                            </tr>
+                        `);
+                    } else if (test.error) {
+                        testRows.push(`
+                            <tr>
+                                <td>${result.feature}</td>
+                                <td>${test.categorical_feature}</td>
+                                <td>${test.test_type}</td>
+                                <td colspan="3">Erreur: ${test.error}</td>
+                            </tr>
+                        `);
+                    }
+                });
+            });
+            
+            testResultsDetails.innerHTML = testRows.join('');
+            
+            // Afficher le modal
+            const modal = new bootstrap.Modal(document.getElementById('featureSelectionModal'));
+            modal.show();
+        }
+
+        // Initialisation des éléments
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM chargé, initialisation des éléments...');
+            
+            // Initialisation des éléments
+            fileSelect = document.getElementById('fileSelect');
+            console.log('fileSelect:', fileSelect);
+            
+            const analyzeBtn = document.getElementById('analyzeBtn');
+            console.log('analyzeBtn:', analyzeBtn);
+            
+            const analysisResults = document.getElementById('analysisResults');
+            console.log('analysisResults:', analysisResults);
+            
+            const treatmentSection = document.getElementById('treatmentSection');
+            console.log('treatmentSection:', treatmentSection);
+            
+            const treatmentForm = document.getElementById('treatmentForm');
+            console.log('treatmentForm:', treatmentForm);
+            
+            const customValueSection = document.getElementById('customValueSection');
+            console.log('customValueSection:', customValueSection);
+            
+            const rowIndexSection = document.getElementById('rowIndexSection');
+            console.log('rowIndexSection:', rowIndexSection);
+            
+            const applyBtn = document.getElementById('applyBtn');
+            console.log('applyBtn:', applyBtn);
+            
+            const configureColumnsBtn = document.getElementById('configureColumnsBtn');
+            console.log('configureColumnsBtn:', configureColumnsBtn);
+            
+            visualizeBtn = document.getElementById('visualizeBtn');
+            console.log('visualizeBtn:', visualizeBtn);
+            
+            plotsContainer = document.getElementById('plotsContainer');
+            console.log('plotsContainer:', plotsContainer);
+
+            correlationBtn = document.getElementById('correlationBtn');
+            console.log('correlationBtn:', correlationBtn);
+
+            const fisherBtn = document.getElementById('fisherBtn');
+            console.log('fisherBtn:', fisherBtn);
+
+            // Initialisation des modals
+            try {
+                const columnTypesModalElement = document.getElementById('columnTypesModal');
+                console.log('columnTypesModalElement:', columnTypesModalElement);
+                
+                const visualizationsModalElement = document.getElementById('visualizationsModal');
+                console.log('visualizationsModalElement:', visualizationsModalElement);
+                
+                columnTypesModal = new bootstrap.Modal(columnTypesModalElement);
+                visualizationsModal = new bootstrap.Modal(visualizationsModalElement);
+                console.log('Modals initialisés avec succès');
+            } catch (error) {
+                console.error('Erreur lors de l\'initialisation des modals:', error);
+                return;
+            }
+
+            // Ajouter l'événement click sur le bouton de visualisation
+            if (visualizeBtn) {
+                console.log('Ajout de l\'événement click sur visualizeBtn');
+                visualizeBtn.addEventListener('click', visualizeData);
+            } else {
+                console.error('visualizeBtn non trouvé');
+            }
+
+            // Charger la liste des fichiers normalisés
+            fetch('/list-files')
+                .then(response => response.json())
+                .then(data => {
+                    const normalizedFiles = data.normalized || [];
+                    normalizedFiles.forEach(file => {
+                        const option = document.createElement('option');
+                        option.value = file;
+                        option.textContent = file;
+                        fileSelect.appendChild(option);
+                    });
+                });
+
+            // Analyser les valeurs manquantes
+            analyzeBtn.addEventListener('click', async () => {
+                const spinner = analyzeBtn.querySelector('.spinner-border');
+                try {
+                    analyzeBtn.disabled = true;
+                    spinner.classList.remove('d-none');
+
+                    const response = await fetch('/analyze-missing-values', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            file_name: fileSelect.value
+                        })
+                    });
+
+                    if (!response.ok) throw new Error('Erreur lors de l\'analyse');
+                    const data = await response.json();
+
+                    // Afficher les résultats
+                    document.getElementById('totalRows').textContent = data.total_rows;
+                    document.getElementById('rowsWithMissing').textContent = data.rows_with_missing;
+
+                    // Afficher les statistiques par colonne
+                    const tbody = document.querySelector('#columnStats tbody');
+                    tbody.innerHTML = '';
+                    data.columns_with_missing.forEach(column => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${column.name}</td>
+                            <td>${column.missing_count}</td>
+                            <td>${column.missing_percentage}%</td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+
+                    // Afficher les sections en fonction de la présence de valeurs manquantes
+                    analysisResults.classList.remove('d-none');
+                    if (data.rows_with_missing > 0) {
+                        treatmentSection.classList.remove('d-none');
+                        applyBtn.disabled = false;
+                    } else {
+                        treatmentSection.classList.add('d-none');
+                        applyBtn.disabled = true;
+                    }
+
+                    // Activer les boutons de visualisation et de configuration
+                    configureColumnsBtn.disabled = false;
+                    visualizeBtn.disabled = false;
+
+                } catch (error) {
+                    console.error('Erreur:', error);
+                    alert('Une erreur est survenue lors de l\'analyse');
+                } finally {
+                    analyzeBtn.disabled = false;
+                    spinner.classList.add('d-none');
+                }
+            });
+
+            // Activer/désactiver le bouton d'analyse et de visualisation
+            fileSelect.addEventListener('change', () => {
+                analyzeBtn.disabled = !fileSelect.value;
+                visualizeBtn.disabled = true;
+                analysisResults.classList.add('d-none');
+                treatmentSection.classList.add('d-none');
+            });
+
+            // Gérer l'affichage des sections conditionnelles
+            document.querySelectorAll('input[name="method"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    customValueSection.classList.toggle('d-none', radio.value !== 'custom');
+                });
+            });
+
+            document.querySelectorAll('input[name="action"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    rowIndexSection.classList.toggle('d-none', radio.value !== 'row');
+                });
+            });
+
+            // Traiter les valeurs manquantes
+            treatmentForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const spinner = applyBtn.querySelector('.spinner-border');
+
+                try {
+                    const method = document.querySelector('input[name="method"]:checked').value;
+                    const action = document.querySelector('input[name="action"]:checked').value;
+                    
+                    const data = {
+                        file_name: fileSelect.value,
+                        method: method,
+                        action: action
+                    };
+
+                    if (method === 'custom') {
+                        data.custom_value = parseFloat(document.getElementById('customValue').value);
+                        if (isNaN(data.custom_value)) {
+                            throw new Error('Valeur personnalisée invalide');
+                        }
+                    }
+
+                    if (action === 'row') {
+                        data.row_index = parseInt(document.getElementById('rowIndex').value);
+                        if (isNaN(data.row_index) || data.row_index < 0) {
+                            throw new Error('Numéro de ligne invalide');
+                        }
+                    }
+
+                    applyBtn.disabled = true;
+                    spinner.classList.remove('d-none');
+
+                    const response = await fetch('/handle-missing-values', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(data)
+                    });
+
+                    if (!response.ok) throw new Error('Erreur lors du traitement');
+                    const result = await response.json();
+
+                    alert('Traitement effectué avec succès');
+                    // Relancer l'analyse pour mettre à jour les statistiques
+                    analyzeBtn.click();
+
+                } catch (error) {
+                    console.error('Erreur:', error);
+                    alert(error.message || 'Une erreur est survenue lors du traitement');
+                } finally {
+                    applyBtn.disabled = false;
+                    spinner.classList.add('d-none');
+                }
+            });
+
+            // Ouvrir la modal et charger les types de colonnes
+            configureColumnsBtn.addEventListener('click', async () => {
+                await loadColumnTypes(fileSelect.value);
+                columnTypesModal.show();
+            });
+
+            // Charger les types de colonnes
+            async function loadColumnTypes(fileName) {
+                try {
+                    const response = await fetch(`/get-column-types?file=${encodeURIComponent(fileName)}`);
+                    if (!response.ok) throw new Error('Erreur lors du chargement des types de colonnes');
+                    const data = await response.json();
+
+                    const tbody = document.querySelector('#columnTypesTable tbody');
+                    tbody.innerHTML = '';
+
+                    data.columns.forEach(column => {
+                        const config = data.column_configs[column] || {};
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${column}</td>
+                            <td>
+                                <select class="form-select form-select-sm" name="type_${column}">
+                                    <option value="numeric" ${config.type === 'numeric' ? 'selected' : ''}>Numérique</option>
+                                    <option value="categorical" ${config.type === 'categorical' ? 'selected' : ''}>Catégorique</option>
+                                    <option value="datetime" ${config.type === 'datetime' ? 'selected' : ''}>Date/Heure</option>
+                                    <option value="text" ${config.type === 'text' ? 'selected' : ''}>Texte</option>
+                                </select>
+                            </td>
+                            <td>
+                                <input type="text" class="form-control form-control-sm" name="desc_${column}" 
+                                       value="${config.description || ''}" placeholder="Description...">
+                            </td>
+                        `;
+                        tbody.appendChild(row);
+                    });
+                } catch (error) {
+                    console.error('Erreur:', error);
+                    alert('Erreur lors du chargement des types de colonnes');
+                }
+            }
+
+            // Sauvegarder les types de colonnes
+            document.getElementById('saveColumnTypes').addEventListener('click', async () => {
+                const spinner = document.getElementById('saveColumnTypes').querySelector('.spinner-border');
+                try {
+                    spinner.classList.remove('d-none');
+
+                    const columnConfigs = {};
+                    const rows = document.querySelector('#columnTypesTable tbody').querySelectorAll('tr');
+                    
+                    rows.forEach(row => {
+                        const column = row.cells[0].textContent;
+                        const type = row.querySelector(`select[name="type_${column}"]`).value;
+                        const description = row.querySelector(`input[name="desc_${column}"]`).value;
+                        
+                        columnConfigs[column] = {
+                            type: type,
+                            description: description
+                        };
+                    });
+
+                    const response = await fetch('/save-column-types', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            file: fileSelect.value,
+                            column_configs: columnConfigs
+                        })
+                    });
+
+                    if (!response.ok) throw new Error('Erreur lors de la sauvegarde');
+                    alert('Configuration sauvegardée avec succès');
+
+                } catch (error) {
+                    console.error('Erreur:', error);
+                    alert(error.message || 'Erreur lors de la sauvegarde de la configuration');
+                } finally {
+                    spinner.classList.add('d-none');
+                }
+            });
+
+            // Fonction pour afficher la matrice de corrélation
+            function showCorrelationMatrix() {
+                console.log('Début de showCorrelationMatrix');
+                const fileSelect = document.getElementById('fileSelect');
+                const selectedFile = fileSelect.value;
+                
+                if (!selectedFile) {
+                    console.log('Aucun fichier sélectionné');
+                    alert('Veuillez sélectionner un fichier');
+                    return;
+                }
+                
+                console.log('Fichier sélectionné:', selectedFile);
+                const correlationBtn = document.getElementById('correlationBtn');
+                const spinner = correlationBtn.querySelector('.spinner-border');
+                spinner.classList.remove('d-none');
+                
+                console.log('Envoi de la requête au serveur...');
+                fetch('/get-correlation-matrix', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        file_name: selectedFile
+                    })
+                })
+                .then(response => {
+                    console.log('Réponse reçue:', response);
+                    if (!response.ok) {
+                        throw new Error(`Erreur HTTP: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('Données reçues:', data);
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    const container = document.getElementById('correlationMatrixContainer');
+                    container.innerHTML = `<img src="data:image/png;base64,${data.correlation_matrix}" class="img-fluid" alt="Matrice de corrélation">`;
+                    
+                    // Afficher la modal
+                    const correlationModal = new bootstrap.Modal(document.getElementById('correlationModal'));
+                    correlationModal.show();
+                })
+                .catch(error => {
+                    console.error('Erreur détaillée:', error);
+                    alert('Erreur lors du calcul de la matrice de corrélation: ' + error.message);
+                })
+                .finally(() => {
+                    console.log('Fin de la requête');
+                    spinner.classList.add('d-none');
+                });
+            }
+
+            // Ajouter l'événement click sur le bouton de corrélation
+            if (correlationBtn) {
+                console.log('Ajout de l\'événement click sur correlationBtn');
+                correlationBtn.addEventListener('click', showCorrelationMatrix);
+            } else {
+                console.error('correlationBtn non trouvé');
+            }
+
+            // Ajouter l'événement click sur le bouton de Fisher
+            if (fisherBtn) {
+                console.log('Ajout de l\'événement click sur fisherBtn');
+                fisherBtn.addEventListener('click', showFisherTests);
+            } else {
+                console.error('fisherBtn non trouvé');
+            }
+
+            // Ajouter l'événement click sur le bouton de sélection de features
+            const featureSelectionBtn = document.getElementById('featureSelectionBtn');
+            if (featureSelectionBtn) {
+                console.log('Ajout de l\'événement click sur featureSelectionBtn');
+                featureSelectionBtn.addEventListener('click', selectFeatures);
+            } else {
+                console.error('featureSelectionBtn non trouvé');
+            }
+        });
+    </script>
+</body>
+</html> 
