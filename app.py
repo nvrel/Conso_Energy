@@ -20,7 +20,8 @@ import matplotlib.gridspec as gridspec
 import io
 import base64
 import seaborn as sns
-from scipy.stats import fisher_exact, wilcoxon, kruskal
+from scipy.stats import fisher_exact, wilcoxon, kruskal, boxcox
+import scipy.stats as stats
 
 # Charger les variables d'environnement
 load_dotenv()
@@ -29,9 +30,11 @@ load_dotenv()
 logger = setup_logger(__name__)
 
 # Configuration des dossiers
-DATA_DIR = Path("data")
-CSV_DIR = Path("data/csv")
-NORMALIZED_DIR = Path("data/normalized_csv")
+BASE_DIR = Path(__file__).parent.absolute()
+DATA_DIR = BASE_DIR / "data"
+CSV_DIR = DATA_DIR / "csv"
+NORMALIZED_DIR = DATA_DIR / "normalized_csv"
+TRANSFORMED_DIR = DATA_DIR / "transformed_data"
 
 # URL du dataset UCI
 UCI_DATASET_URL = "https://archive.ics.uci.edu/static/public/242/energy+efficiency.zip"
@@ -40,10 +43,11 @@ UCI_DATASET_URL = "https://archive.ics.uci.edu/static/public/242/energy+efficien
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['UPLOAD_FOLDER'] = tempfile.mkdtemp()
-app.config['DATA_FOLDER'] = 'data'
-app.config['CSV_FOLDER'] = 'data/csv'
-app.config['NORMALIZED_FOLDER'] = 'data/normalized_csv'
-app.config['VISUALIZATIONS_FOLDER'] = 'data/visualizations'
+app.config['DATA_FOLDER'] = str(DATA_DIR)
+app.config['CSV_FOLDER'] = str(CSV_DIR)
+app.config['NORMALIZED_FOLDER'] = str(NORMALIZED_DIR)
+app.config['TRANSFORMED_FOLDER'] = str(TRANSFORMED_DIR)
+app.config['VISUALIZATIONS_FOLDER'] = str(DATA_DIR / "visualizations")
 
 # Extensions de fichiers autorisées
 ALLOWED_EXTENSIONS = {'zip', 'xlsx', 'xls', 'csv'}
@@ -75,21 +79,43 @@ def index():
 
 @app.route('/list-files')
 def list_files():
+    """Liste les fichiers disponibles dans les différents répertoires"""
     try:
         # Récupérer les fichiers des différents répertoires
-        data_files = [f for f in os.listdir(app.config['DATA_FOLDER']) 
+        data_files = [f for f in os.listdir(DATA_DIR) 
                      if f.endswith(('.xlsx', '.xls', '.csv', '.zip'))]
         
-        csv_files = [f for f in os.listdir(app.config['CSV_FOLDER']) 
+        csv_files = [f for f in os.listdir(CSV_DIR) 
                     if f.endswith('.csv')]
         
-        normalized_files = [f for f in os.listdir(app.config['NORMALIZED_FOLDER']) 
-                          if f.endswith('.csv')]
+        # Récupérer les fichiers normalisés
+        normalized_files = []
+        if NORMALIZED_DIR.exists():
+            normalized_files = [f for f in os.listdir(NORMALIZED_DIR) 
+                              if f.endswith('.csv')]
+            logger.info(f"Fichiers normalisés trouvés: {normalized_files}")
+        else:
+            logger.warning(f"Le répertoire {NORMALIZED_DIR} n'existe pas")
+        
+        # Récupérer les fichiers transformés
+        transformed_files = []
+        if TRANSFORMED_DIR.exists():
+            transformed_files = [f for f in os.listdir(TRANSFORMED_DIR) 
+                               if f.endswith('.csv')]
+            logger.info(f"Fichiers transformés trouvés: {transformed_files}")
+        else:
+            logger.warning(f"Le répertoire {TRANSFORMED_DIR} n'existe pas")
+        
+        # Combiner les fichiers normalisés et transformés
+        all_files = normalized_files + transformed_files
+        logger.info(f"Liste complète des fichiers: {all_files}")
         
         return jsonify({
             'data': data_files,
             'csv': csv_files,
-            'normalized': normalized_files
+            'normalized': normalized_files,
+            'transformed': transformed_files,
+            'all_files': all_files  # Ajout de la liste complète
         })
     except Exception as e:
         logger.error(f"Erreur lors de la liste des fichiers : {str(e)}")
@@ -234,16 +260,51 @@ def analyze_missing_values():
             return jsonify({'error': 'Nom de fichier non fourni'}), 400
             
         file_name = data['file_name']
-        result = data_analyzer.analyze_missing_values(file_name)
-        logger.info(f"Analyse des valeurs manquantes terminée pour {file_name}")
+        logger.info(f"Analyse des valeurs manquantes pour le fichier: {file_name}")
+        
+        # Obtenir le chemin du fichier
+        file_path = get_file_path(file_name)
+        if not file_path:
+            logger.error(f"Fichier non trouvé: {file_name}")
+            return jsonify({'error': f'Fichier {file_name} non trouvé'}), 404
+            
+        logger.info(f"Chemin du fichier trouvé: {file_path}")
+        
+        # Lire le fichier
+        try:
+            df = pd.read_csv(file_path, sep=';', decimal=',')
+            logger.info(f"Fichier lu avec succès. Colonnes: {df.columns.tolist()}")
+        except Exception as e:
+            logger.error(f"Erreur lors de la lecture du fichier: {str(e)}")
+            return jsonify({'error': f'Erreur lors de la lecture du fichier: {str(e)}'}), 500
+            
+        # Analyser les valeurs manquantes
+        total_rows = int(len(df))  # Convertir en int Python
+        rows_with_missing = int(df.isnull().any(axis=1).sum())  # Convertir en int Python
+        columns_with_missing = []
+        
+        for column in df.columns:
+            missing_count = int(df[column].isnull().sum())  # Convertir en int Python
+            if missing_count > 0:
+                missing_percentage = float((missing_count / total_rows) * 100)  # Convertir en float Python
+                columns_with_missing.append({
+                    'name': column,
+                    'missing_count': missing_count,
+                    'missing_percentage': round(missing_percentage, 2)
+                })
+        
+        result = {
+            'total_rows': total_rows,
+            'rows_with_missing': rows_with_missing,
+            'columns_with_missing': columns_with_missing
+        }
+        
+        logger.info(f"Analyse terminée avec succès pour {file_name}")
         return jsonify(result)
         
-    except FileNotFoundError as e:
-        logger.error(f"Fichier non trouvé: {str(e)}")
-        return jsonify({'error': f"Fichier non trouvé: {str(e)}"}), 404
     except Exception as e:
         logger.error(f"Erreur lors de l'analyse des valeurs manquantes: {str(e)}")
-        return jsonify({'error': f"Une erreur est survenue lors de l'analyse des valeurs manquantes: {str(e)}"}), 500
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/handle-missing-values', methods=['POST'])
 def handle_missing_values():
@@ -390,13 +451,27 @@ def download_uci():
 def analysis():
     """Route pour afficher la page d'analyse des données"""
     try:
-        # Récupérer la liste des fichiers normalisés
-        normalized_files = [f for f in os.listdir(app.config['NORMALIZED_FOLDER']) 
-                          if f.endswith('.csv')]
-        return render_template('analysis.html', normalized_files=normalized_files)
+        # Récupérer les fichiers des deux répertoires
+        normalized_files = []
+        if NORMALIZED_DIR.exists():
+            normalized_files = [f for f in os.listdir(NORMALIZED_DIR) 
+                              if f.endswith('.csv')]
+            logger.info(f"Fichiers normalisés trouvés: {normalized_files}")
+        
+        transformed_files = []
+        if TRANSFORMED_DIR.exists():
+            transformed_files = [f for f in os.listdir(TRANSFORMED_DIR) 
+                               if f.endswith('.csv')]
+            logger.info(f"Fichiers transformés trouvés: {transformed_files}")
+        
+        # Combiner les deux listes
+        all_files = normalized_files + transformed_files
+        logger.info(f"Liste complète des fichiers: {all_files}")
+        
+        return render_template('analysis.html', all_files=all_files)
     except Exception as e:
         logger.error(f"Erreur lors de l'accès à la page d'analyse : {str(e)}")
-        return render_template('analysis.html', normalized_files=[])
+        return render_template('analysis.html', all_files=[])
 
 @app.route('/column-types')
 def column_types():
@@ -457,18 +532,128 @@ def save_column_types():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+def ensure_directory_exists(directory):
+    """Crée un répertoire s'il n'existe pas et s'assure qu'il est accessible en écriture"""
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        # Vérifier les permissions en essayant d'écrire un fichier test
+        test_file = directory / "test_permissions.tmp"
+        with open(test_file, 'w') as f:
+            f.write("test")
+        test_file.unlink()  # Supprimer le fichier test
+        return True
+    except Exception as e:
+        logger.error(f"Erreur lors de la création/validation du répertoire {directory}: {str(e)}")
+        return False
+
+def get_file_path(file_name):
+    """Retourne le chemin complet du fichier en cherchant dans les répertoires appropriés"""
+    logger.info(f"Recherche du fichier: {file_name}")
+    logger.info(f"Répertoire transformed_data: {TRANSFORMED_DIR}")
+    logger.info(f"Répertoire normalized_csv: {NORMALIZED_DIR}")
+    
+    # Si le fichier commence par "transformed_", chercher dans le répertoire transformed_data
+    if file_name.startswith("transformed_"):
+        transformed_path = TRANSFORMED_DIR / file_name
+        logger.info(f"Recherche du fichier transformé: {transformed_path}")
+        if transformed_path.exists():
+            logger.info(f"Fichier transformé trouvé: {transformed_path}")
+            return str(transformed_path)
+        else:
+            logger.warning(f"Fichier transformé non trouvé: {transformed_path}")
+    else:
+        # Chercher d'abord dans le répertoire transformed_data
+        transformed_path = TRANSFORMED_DIR / f"transformed_{file_name}"
+        logger.info(f"Recherche du fichier transformé: {transformed_path}")
+        if transformed_path.exists():
+            logger.info(f"Fichier transformé trouvé: {transformed_path}")
+            return str(transformed_path)
+        
+        # Si non trouvé, chercher dans le répertoire normalized_csv
+        normalized_path = NORMALIZED_DIR / file_name
+        logger.info(f"Recherche du fichier normalisé: {normalized_path}")
+        if normalized_path.exists():
+            logger.info(f"Fichier normalisé trouvé: {normalized_path}")
+            return str(normalized_path)
+        else:
+            logger.warning(f"Fichier normalisé non trouvé: {normalized_path}")
+    
+    logger.error(f"Fichier non trouvé dans aucun répertoire: {file_name}")
+    return None
+
 @app.route('/get-distributions', methods=['POST'])
 def get_distributions():
     """Route pour obtenir les visualisations des distributions"""
     logger.info("Début de la génération des distributions")
     try:
+        # Configurer matplotlib pour utiliser un backend non-interactif
+        import matplotlib
+        matplotlib.use('Agg')  # Utiliser le backend non-interactif
+        import matplotlib.pyplot as plt
+        
         data = request.get_json()
         if not data or 'file_name' not in data:
             logger.error("Nom de fichier non fourni")
             return jsonify({'error': 'Nom de fichier non fourni'}), 400
             
         file_name = data['file_name']
-        distributions = data_analyzer.generate_distribution_plots(file_name)
+        logger.info(f"Génération des distributions pour le fichier: {file_name}")
+        
+        # Obtenir le chemin du fichier
+        file_path = get_file_path(file_name)
+        if not file_path:
+            logger.error(f"Fichier non trouvé: {file_name}")
+            return jsonify({'error': f'Fichier {file_name} non trouvé'}), 404
+            
+        logger.info(f"Chemin du fichier trouvé: {file_path}")
+        
+        # Lire le fichier
+        try:
+            df = pd.read_csv(file_path, sep=';', decimal=',')
+            logger.info(f"Fichier lu avec succès. Colonnes: {df.columns.tolist()}")
+        except Exception as e:
+            logger.error(f"Erreur lors de la lecture du fichier: {str(e)}")
+            return jsonify({'error': f'Erreur lors de la lecture du fichier: {str(e)}'}), 500
+            
+        # Générer les visualisations
+        distributions = {}
+        for column in df.columns:
+            try:
+                # Convertir la colonne en valeurs numériques
+                values = pd.to_numeric(df[column].astype(str).str.replace(',', '.'), errors='coerce')
+                
+                # Créer la figure
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+                
+                # Histogramme
+                sns.histplot(values, kde=True, ax=ax1)
+                ax1.set_title(f'Distribution de {column}')
+                ax1.set_xlabel('Valeur')
+                ax1.set_ylabel('Fréquence')
+                
+                # QQ Plot
+                stats.probplot(values, dist="norm", plot=ax2)
+                ax2.set_title(f'QQ Plot de {column}')
+                
+                plt.tight_layout()
+                
+                # Convertir la figure en base64
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png', bbox_inches='tight')
+                buf.seek(0)
+                plt.close(fig)  # Fermer explicitement la figure
+                
+                distributions[column] = base64.b64encode(buf.getvalue()).decode('utf-8')
+                logger.info(f"Visualisation générée pour la colonne: {column}")
+                
+            except Exception as e:
+                logger.error(f"Erreur lors de la génération de la visualisation pour {column}: {str(e)}")
+                continue
+        
+        if not distributions:
+            logger.error("Aucune visualisation n'a pu être générée")
+            return jsonify({'error': 'Aucune visualisation n\'a pu être générée'}), 500
+            
         logger.info(f"Distributions générées avec succès pour {file_name}")
         return jsonify({'distributions': distributions})
         
@@ -487,18 +672,25 @@ def analyze_distribution():
         file_name = data['file_name']
         column_name = data['column_name']
         
-        app.logger.info(f"Analyse de la distribution de {column_name} dans {file_name}")
+        logger.info(f"Analyse de la distribution de {column_name} dans {file_name}")
         
         # Vérifier que le client OpenAI est initialisé
         if not client:
             return jsonify({'error': 'Client OpenAI non initialisé'}), 500
         
         # Lire le fichier avec les bonnes options pour les nombres
-        file_path = os.path.join(app.config['NORMALIZED_FOLDER'], file_name)
-        df = pd.read_csv(file_path, sep=';')
+        file_path = get_file_path(file_name)
+        if not file_path:
+            logger.error(f"Fichier non trouvé: {file_name}")
+            return jsonify({'error': f'Fichier {file_name} non trouvé'}), 404
+        
+        # Lire le fichier avec les bons paramètres
+        logger.info(f"Lecture du fichier CSV: {file_path}")
+        df = pd.read_csv(file_path, sep=';', decimal=',')
         
         # Vérifier que la colonne existe
         if column_name not in df.columns:
+            logger.error(f"Colonne {column_name} non trouvée dans le fichier")
             return jsonify({'error': f'Colonne {column_name} non trouvée'}), 404
         
         # Nettoyer et convertir la colonne en numérique
@@ -552,7 +744,7 @@ def analyze_distribution():
         })
         
     except Exception as e:
-        app.logger.error(f"Erreur lors de l'analyse de la distribution: {str(e)}")
+        logger.error(f"Erreur lors de l'analyse de la distribution: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/get-columns')
@@ -562,7 +754,10 @@ def get_columns():
         return jsonify({'error': 'Nom de fichier manquant'}), 400
 
     try:
-        file_path = os.path.join(app.config['DATA_FOLDER'], file_name)
+        file_path = get_file_path(file_name)
+        if not file_path:
+            return jsonify({'error': f'Fichier {file_name} non trouvé'}), 404
+        
         df = pd.read_csv(file_path)
         return jsonify({'columns': df.columns.tolist()})
     except Exception as e:
@@ -577,10 +772,10 @@ def visualize():
             return jsonify({'error': 'Nom de fichier manquant'}), 400
 
         file_name = data['file_name']
-        file_path = os.path.join(app.config['DATA_FOLDER'], file_name)
+        file_path = get_file_path(file_name)
         
         # Vérifier si le fichier existe
-        if not os.path.exists(file_path):
+        if not file_path:
             return jsonify({'error': 'Fichier non trouvé'}), 404
 
         # Vérifier si l'image existe déjà et si le fichier n'a pas été modifié
@@ -611,8 +806,8 @@ def visualize():
 def download_visualization(file_name):
     try:
         # Vérifier que le fichier existe
-        file_path = os.path.join(app.config['NORMALIZED_FOLDER'], file_name)
-        if not os.path.exists(file_path):
+        file_path = get_file_path(file_name)
+        if not file_path:
             return jsonify({'error': 'Fichier non trouvé'}), 404
 
         # Générer les visualisations
@@ -657,8 +852,10 @@ def get_correlation_matrix():
             return jsonify({'error': 'file_name est requis'}), 400
 
         file_name = data['file_name']
-        logger.info(f"Traitement du fichier: {file_name}")
-        file_path = os.path.join(app.config['NORMALIZED_FOLDER'], file_name)
+        file_path = get_file_path(file_name)
+        if not file_path:
+            logger.error(f"Fichier non trouvé: {file_name}")
+            return jsonify({'error': f'Fichier {file_name} non trouvé'}), 404
         
         # Lire le fichier avec les bons paramètres
         logger.info("Lecture du fichier CSV")
@@ -732,8 +929,10 @@ def get_fisher_tests():
             return jsonify({'error': 'file_name est requis'}), 400
 
         file_name = data['file_name']
-        logger.info(f"Traitement du fichier: {file_name}")
-        file_path = os.path.join(app.config['NORMALIZED_FOLDER'], file_name)
+        file_path = get_file_path(file_name)
+        if not file_path:
+            logger.error(f"Fichier non trouvé: {file_name}")
+            return jsonify({'error': f'Fichier {file_name} non trouvé'}), 404
         
         # Lire le fichier
         logger.info("Lecture du fichier CSV")
@@ -798,12 +997,9 @@ def select_features():
             return jsonify({'error': 'file_name est requis'}), 400
 
         file_name = data['file_name']
-        logger.info(f"Traitement du fichier: {file_name}")
-        file_path = os.path.join(app.config['NORMALIZED_FOLDER'], file_name)
-        
-        # Vérifier si le fichier existe
-        if not os.path.exists(file_path):
-            logger.error(f"Fichier non trouvé: {file_path}")
+        file_path = get_file_path(file_name)
+        if not file_path:
+            logger.error(f"Fichier non trouvé: {file_name}")
             return jsonify({'error': f'Fichier {file_name} non trouvé'}), 404
         
         # Lire le fichier avec les bons paramètres
@@ -1097,14 +1293,102 @@ def select_features():
         logger.error(f"Traceback: {e.__traceback__}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/transform-data', methods=['POST'])
+def transform_data():
+    """Transforme les labels avec la transformation Box-Cox"""
+    try:
+        logger.info("Début de la transformation des données")
+        data = request.get_json()
+        if not data or 'file_name' not in data:
+            logger.error("Nom de fichier non fourni")
+            return jsonify({'error': 'file_name est requis'}), 400
+
+        file_name = data['file_name']
+        logger.info(f"Traitement du fichier: {file_name}")
+        
+        # Vérifier si le fichier existe
+        file_path = get_file_path(file_name)
+        if not file_path:
+            logger.error(f"Fichier non trouvé: {file_name}")
+            return jsonify({'error': f'Fichier {file_name} non trouvé'}), 404
+        
+        # S'assurer que le répertoire transformed_data existe et est accessible
+        if not ensure_directory_exists(TRANSFORMED_DIR):
+            logger.error(f"Impossible de créer/accéder au répertoire {TRANSFORMED_DIR}")
+            return jsonify({'error': 'Impossible de créer/accéder au répertoire transformed_data'}), 500
+        
+        # Vérifier si le fichier transformé existe déjà
+        new_file_name = f"transformed_{file_name}"
+        new_file_path = TRANSFORMED_DIR / new_file_name
+        if new_file_path.exists():
+            logger.warning(f"Le fichier transformé {new_file_name} existe déjà")
+            # Supprimer le fichier existant
+            try:
+                new_file_path.unlink()
+                logger.info(f"Fichier existant {new_file_name} supprimé avec succès")
+            except Exception as e:
+                logger.error(f"Erreur lors de la suppression du fichier existant: {str(e)}")
+                return jsonify({'error': f'Impossible de supprimer le fichier existant: {str(e)}'}), 500
+        
+        # Lire le fichier avec les bons paramètres
+        logger.info("Lecture du fichier CSV")
+        df = pd.read_csv(file_path, sep=';', decimal=',')
+        
+        # Récupérer les noms des labels normalisés
+        from config.normalized_names import TARGETS_NORMALIZED_NAMES
+        labels = [TARGETS_NORMALIZED_NAMES['y1'], TARGETS_NORMALIZED_NAMES['y2']]
+        logger.info(f"Labels identifiés: {labels}")
+        
+        # Vérifier que les labels existent
+        missing_labels = [label for label in labels if label not in df.columns]
+        if missing_labels:
+            logger.error(f"Labels manquants: {missing_labels}")
+            return jsonify({'error': f'Labels manquants: {", ".join(missing_labels)}'}), 400
+        
+        # Appliquer la transformation Box-Cox sur chaque label
+        transformed_df = df.copy()
+        for label in labels:
+            try:
+                # Convertir en float et remplacer les virgules par des points
+                values = pd.to_numeric(df[label].astype(str).str.replace(',', '.'), errors='coerce')
+                # Vérifier qu'il y a des valeurs valides
+                if values.isna().all():
+                    raise ValueError(f"La colonne {label} ne contient pas de valeurs numériques valides")
+                # Appliquer la transformation Box-Cox
+                transformed_values, _ = boxcox(values)
+                transformed_df[label] = transformed_values
+            except Exception as e:
+                logger.error(f"Erreur lors de la transformation de {label}: {str(e)}")
+                return jsonify({'error': f'Erreur lors de la transformation de {label}: {str(e)}'}), 500
+        
+        # Sauvegarder le nouveau fichier
+        logger.info(f"Tentative de sauvegarde dans: {new_file_path}")
+        
+        try:
+            transformed_df.to_csv(new_file_path, sep=';', decimal=',', index=False)
+            logger.info(f"Fichier transformé sauvegardé avec succès: {new_file_path}")
+        except Exception as e:
+            logger.error(f"Erreur lors de la sauvegarde du fichier: {str(e)}")
+            return jsonify({'error': f'Erreur lors de la sauvegarde du fichier: {str(e)}'}), 500
+        
+        return jsonify({
+            'message': 'Transformation terminée avec succès',
+            'new_file': new_file_name
+        })
+        
+    except Exception as e:
+        logger.error(f"Erreur lors de la transformation: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     logger.info("Démarrage de l'application Flask")
     try:
         # Créer les répertoires s'ils n'existent pas
         logger.info("Création des répertoires si nécessaire")
-        DATA_DIR.mkdir(exist_ok=True)
-        CSV_DIR.mkdir(exist_ok=True)
-        NORMALIZED_DIR.mkdir(exist_ok=True)
+        ensure_directory_exists(DATA_DIR)
+        ensure_directory_exists(CSV_DIR)
+        ensure_directory_exists(NORMALIZED_DIR)
+        ensure_directory_exists(TRANSFORMED_DIR)
         
         # Vérifier l'initialisation des composants
         logger.info("Vérification des composants")
