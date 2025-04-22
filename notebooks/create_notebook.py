@@ -1083,15 +1083,7 @@ display(summary_df.style
 
 # Cellule 14: Séparation des données et préparation des features
 cells.append(nbf.v4.new_markdown_cell("## 14. Séparation des données et préparation des features"))
-cells.append(nbf.v4.new_code_cell('''# Charger et préparer les données
-normalized_data = load_data(NORMALIZED_DIR)
-normalized_data_converted = {}
-
-# Convertir les colonnes selon leur type pour chaque fichier
-for file_name, df in normalized_data.items():
-    normalized_data_converted[file_name] = convert_columns(df, column_config)
-
-# Prendre le premier fichier comme exemple
+cells.append(nbf.v4.new_code_cell('''# Prendre le premier fichier comme exemple
 file_name = next(iter(normalized_data_converted))
 df = normalized_data_converted[file_name]
 
@@ -1111,7 +1103,7 @@ print("Séparation des données et préparation des features")
 print("-" * 40)
 
 # Séparer les données en train/test
-X = normalized_data_converted[file_name][all_features]  # Utiliser les données normalisées avec features polynomiales
+X = df[all_features]  # Utiliser les données avec features polynomiales
 y = df_transformed[label]  # Utiliser les données transformées pour y
 y_orig = df[label]  # Garder les valeurs originales pour le RMSE
 
