@@ -19,6 +19,11 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import cross_val_score, KFold
 from sklearn.impute import SimpleImputer
+from scipy.stats import probplot
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from statsmodels.stats.diagnostic import het_breuschpagan  # Ajout de l'import
 
 # Charger les variables d'environnement depuis .env
 current_dir = os.getcwd()
@@ -42,6 +47,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
+from scipy.stats import probplot
 import openai
 import json
 from IPython.display import display, Markdown
@@ -601,6 +607,18 @@ for file_name, df in normalized_data_converted.items():
         ])
         .hide(axis='index')
     )
+# Construire le dictionnaire filtré
+normalized_data_converted_selected = {}
+for file_name, df in normalized_data_converted.items():
+    # ne garder que les colonnes non éliminées
+    cols_to_drop = [f for f in df.columns if f in features_to_eliminate]
+    normalized_data_converted_selected[file_name] = df.drop(columns=cols_to_drop)
+    # Identifier les features numériques et catégorielles
+    numeric_features_sel = [col for col in df.columns if col.startswith('f_') and df[col].dtype in ['int64', 'float64']]
+    categorical_features_sel = [col for col in df.columns if col.startswith('f_') and df[col].dtype.name == 'category']
+    labels = [col for col in df.columns if col.startswith('l_')]
+
+
 '''))
 
 # Cellule 11: Analyse des distributions des labels
@@ -618,8 +636,9 @@ Pour chaque label, nous allons :
 6. Recommander les transformations les plus pertinentes
 """))
 
-cells.append(nbf.v4.new_code_cell('''# Fonction pour analyser la distribution d'une variable
-def analyze_distribution(df, column):
+
+# Ajout de la fonction analyze_distribution
+cells.append(nbf.v4.new_code_cell('''def analyze_distribution(df, column):
     """
     Analyse la distribution d'une variable et teste différentes transformations.
     
@@ -718,17 +737,14 @@ def analyze_distribution(df, column):
     
     plt.tight_layout()
     plt.show()
+'''))
 
-# Analyser les distributions des labels
-for file_name, df in normalized_data_converted.items():
-    print(f"{'='*80}")
-    print(f"Analyse des distributions des labels pour {file_name}")
-    print(f"{'='*80}")
-    
-    # Identifier les labels (préfixe 'l_')
-    labels = [col for col in df.columns if col.startswith('l_')]
-    
+# Cellule pour l'analyse des distributions
+cells.append(nbf.v4.new_code_cell('''# Analyse des distributions pour chaque label
+for file_name, df in normalized_data_converted_selected.items():
+    print(f"\\nAnalyse des distributions pour le fichier : {file_name}")
     for label in labels:
+        print(f"\\nAnalyse de la distribution de {label}")
         analyze_distribution(df, label)
 '''))
 
@@ -739,12 +755,113 @@ cells.append(nbf.v4.new_markdown_cell("""## 12. Analyse GPT des distributions
 Utiliser un modèle GPT pour analyser les résultats des transformations et recommander la transformation la plus appropriée pour chaque label dans le cadre d'un modèle linéaire.
 """))
 
+# Ajout de la fonction analyze_distributions_with_gpt
+cells.append(nbf.v4.new_code_cell('''def analyze_distributions_with_gpt(file_name, label_stats):
+    """
+    Analyse les distributions des labels avec GPT et recommande des transformations.
+    
+    Args:
+        file_name (str): Nom du fichier analysé
+        label_stats (dict): Dictionnaire contenant les statistiques des labels et leurs transformations
+        
+    Returns:
+        list: Liste de dictionnaires contenant les recommandations pour chaque label
+    """
+    import openai
+    from dotenv import load_dotenv
+    import os
+    import json
+    
+    # Charger les variables d'environnement
+    load_dotenv()
+    
+    # Vérifier la présence de la clé API
+    if not os.getenv('OPENAI_API_KEY'):
+        print("Erreur: La clé API OpenAI n'est pas définie dans le fichier .env")
+        return []
+    
+    # Configurer la clé API
+    openai.api_key = os.getenv('OPENAI_API_KEY')
+    
+    recommendations = []
+    
+    for label, stats in label_stats.items():
+        # Préparer le prompt pour GPT
+        prompt = f"""Analyse la distribution de la variable {label} du fichier {file_name} et recommande la meilleure transformation pour un modèle linéaire.
+
+Statistiques originales:
+- Skewness: {stats['original']['skewness']:.2f}
+- Kurtosis: {stats['original']['kurtosis']:.2f}
+
+Statistiques après transformations:
+"""
+        
+        # Ajouter les statistiques des transformations
+        for trans_name, trans_stats in stats['transformations'].items():
+            prompt += f"- {trans_name}:\\n"
+            prompt += f"  - Skewness: {trans_stats['skewness']:.2f}\\n"
+            prompt += f"  - Kurtosis: {trans_stats['kurtosis']:.2f}\\n"
+        
+        prompt += """
+Recommandation:
+1. Analyse la distribution originale et les transformations
+2. Identifie la transformation qui donne la distribution la plus proche d'une distribution normale
+3. Justifie ton choix en te basant sur la skewness et la kurtosis
+4. Retourne ta réponse au format JSON suivant:
+{
+    "label": "nom_du_label",
+    "transformation": "nom_de_la_transformation_recommandée",
+    "justification": "explication détaillée du choix"
+}
+"""
+        
+        try:
+            # Appel à l'API OpenAI
+            response = openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "Tu es un expert en analyse de données et en statistiques."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+            
+            # Extraire la réponse JSON
+            response_text = response.choices[0].message.content
+            try:
+                # Essayer d'extraire le JSON de la réponse
+                start_idx = response_text.find('{')
+                end_idx = response_text.rfind('}') + 1
+                json_str = response_text[start_idx:end_idx]
+                recommendation = json.loads(json_str)
+                recommendations.append(recommendation)
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"Erreur lors de l'analyse de la réponse pour {label}: {str(e)}")
+                print(f"Réponse reçue: {response_text}")
+                recommendations.append({
+                    "label": label,
+                    "transformation": "none",
+                    "justification": "Erreur lors de l'analyse de la réponse"
+                })
+                
+        except Exception as e:
+            print(f"Erreur lors de l'appel à l'API OpenAI pour {label}: {str(e)}")
+            recommendations.append({
+                "label": label,
+                "transformation": "none",
+                "justification": "Erreur lors de l'appel à l'API"
+            })
+    
+    return recommendations
+'''))
+
+
 cells.append(nbf.v4.new_code_cell('''# Stocker les résultats de l'analyse GPT et les features à éliminer
 gpt_results = {}
-features_to_eliminate = set()  # Ensemble pour stocker les features à éliminer
+features_to_eliminate = set()
 
 # Collecter les statistiques pour chaque label
-for file_name, df in normalized_data_converted.items():
+for file_name, df in normalized_data_converted_selected.items():
     print(f"{'='*80}")
     print(f"Analyse GPT des distributions pour {file_name}")
     print(f"{'='*80}")
@@ -764,6 +881,14 @@ for file_name, df in normalized_data_converted.items():
         # Transformations
         transformations = {}
         
+        # Box-Cox
+        if (df[label] > 0).all():
+           boxcox_col, _ = stats.boxcox(df[label])
+           transformations['boxcox'] = {
+               'skewness': pd.Series(boxcox_col).skew(),
+               'kurtosis': pd.Series(boxcox_col).kurtosis()
+        }
+    
         # Log
         if (df[label] > 0).all():
             log_col = np.log(df[label])
@@ -809,13 +934,7 @@ for file_name, df in normalized_data_converted.items():
                 'kurtosis': cbrt_col.kurtosis()
             }
         
-        # Box-Cox
-        if (df[label] > 0).all():
-            boxcox_col, _ = stats.boxcox(df[label])
-            transformations['boxcox'] = {
-                'skewness': pd.Series(boxcox_col).skew(),
-                'kurtosis': pd.Series(boxcox_col).kurtosis()
-            }
+
         
         label_stats[label] = {
             'original': original_stats,
@@ -825,9 +944,13 @@ for file_name, df in normalized_data_converted.items():
     # Analyser avec GPT et stocker les résultats
     gpt_results[file_name] = analyze_distributions_with_gpt(file_name, label_stats)
     
-    # Stocker les features à éliminer (ajoutez ici la logique pour identifier les features à éliminer)
-    # Par exemple, si vous avez une fonction qui identifie les features à éliminer :
-    # features_to_eliminate.update(identify_features_to_eliminate(df))'''))
+    # Afficher les résultats de l'analyse GPT
+    print("\\nRésultats de l'analyse GPT :")
+    for result in gpt_results[file_name]:
+        print(f"\\nAnalyse pour {result['label']} :")
+        print(f"Transformation recommandée : {result['transformation']}")
+        print(f"Justification : {result['justification']}")
+        print("-" * 40)'''))
 
 # Cellule 13: Transformation des labels et visualisation
 cells.append(nbf.v4.new_markdown_cell("""## 13. Transformation des labels et visualisation
@@ -837,7 +960,7 @@ Transformer les labels selon les recommandations de GPT et visualiser l'impact d
 """))
 
 cells.append(nbf.v4.new_code_cell('''# Transformer les labels selon les recommandations de GPT
-for file_name, df in normalized_data_converted.items():
+for file_name, df in normalized_data_converted_selected.items():
     print(f"{'='*80}")
     print(f"Transformation des labels pour {file_name}")
     print(f"{'='*80}")
@@ -1017,7 +1140,7 @@ def get_polynomial_features(df, target_col):
 polynomial_analysis_results = {}
 
 # Appliquer les transformations polynomiales pour chaque fichier
-for file_name, df in normalized_data_converted.items():
+for file_name, df in normalized_data_converted_selected.items():
     print(f"{'='*80}")
     print(f"Création des features polynomiales pour {file_name}")
     print(f"{'='*80}")
@@ -1051,8 +1174,8 @@ for file_name, df in normalized_data_converted.items():
                 'correlations': {f: df[f].corr(df[label]) for f in features_to_transform}
             }
             
-            # Mettre à jour le DataFrame dans normalized_data_converted
-            normalized_data_converted[file_name] = df_poly
+            # Mettre à jour le DataFrame dans normalized_data_converted_selected
+            normalized_data_converted_selected[file_name] = df_poly
         else:
             print("Aucune feature sélectionnée pour transformation.")
 
@@ -1081,101 +1204,322 @@ display(summary_df.style
     .hide(axis='index')
 )'''))
 
-# Cellule 14: Séparation des données et préparation des features
-cells.append(nbf.v4.new_markdown_cell("## 14. Séparation des données et préparation des features"))
-cells.append(nbf.v4.new_code_cell('''# Prendre le premier fichier comme exemple
-file_name = next(iter(normalized_data_converted))
-df = normalized_data_converted[file_name]
+# Cellule 14: Sélection de modèles linéaires optimaux
+cells.append(nbf.v4.new_markdown_cell('''## 14. Sélection de modèles linéaires optimaux
 
-# Identifier les features et labels
-numeric_features = [col for col in df.columns if col.startswith('f_') and df[col].dtype in ['int64', 'float64']]
-categorical_features = [col for col in df.columns if col.startswith('f_') and df[col].dtype.name == 'category']
-all_features = numeric_features + categorical_features
-labels = [col for col in df.columns if col.startswith('l_')]
+### Objectif
+Pour chaque label (après transformation selon les recommandations de GPT), nous allons déterminer le meilleur modèle linéaire en utilisant trois approches de régression stepwise :
 
-# Prendre le premier label comme exemple
-label = labels[0]
+1. **Forward Selection** :
+   - Part d'un modèle vide
+   - À chaque étape, ajoute la variable qui améliore le plus le modèle
+   - S'arrête quand plus aucune variable n'améliore significativement le modèle
 
-# Créer une copie pour les données transformées
-df_transformed = df.copy()
+2. **Backward Elimination** :
+   - Part d'un modèle avec toutes les variables
+   - À chaque étape, retire la variable la moins significative
+   - S'arrête quand toutes les variables restantes sont significatives
 
-print("Séparation des données et préparation des features")
-print("-" * 40)
+3. **Bidirectional Elimination** (Stepwise) :
+   - Combine Forward et Backward
+   - À chaque étape, peut soit ajouter soit retirer une variable
+   - S'arrête quand plus aucun changement n'améliore le modèle
 
-# Séparer les données en train/test
-X = df[all_features]  # Utiliser les données avec features polynomiales
-y = df_transformed[label]  # Utiliser les données transformées pour y
-y_orig = df[label]  # Garder les valeurs originales pour le RMSE
+Pour chaque approche :
+- Critère d'entrée : p-value < 0.05
+- Critère de sortie : p-value > 0.1
+- Métriques d'évaluation : R² ajusté, AIC, BIC
+- Validation sur un jeu de test indépendant (30% des données)
+'''))
 
-# Séparation train/test
-X_train, X_test, y_train, y_test, y_train_orig, y_test_orig = train_test_split(
-    X, y, y_orig, test_size=0.2, random_state=42
-)
+# Cellule de code 14
+code_cell_14 = '''from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score, mean_squared_error
+import statsmodels.api as sm
+from itertools import combinations
+from sklearn.model_selection import train_test_split
 
-# Créer les transformers
-numeric_transformer = Pipeline(steps=[
-    ('imputer', SimpleImputer(strategy='median')),
-    ('scaler', StandardScaler())
-])
+def inverse_transform(y, transformation):
+    """
+    Applique la transformation inverse aux prédictions.
+    """
+    if not transformation or transformation.lower() == 'none':
+        return y
+    elif transformation.lower() == 'log':
+        return np.exp(y)
+    elif transformation.lower() == 'sqrt':
+        return np.square(y)
+    elif transformation.lower() == 'square':
+        return np.sqrt(y)
+    elif transformation.lower() == 'cube':
+        return np.cbrt(y)
+    elif transformation.lower() == 'power4':
+        return np.power(y, 1/4)
+    elif transformation.lower() == 'cbrt':
+        return np.power(y, 3)
+    elif transformation.lower() == 'boxcox':
+        return y
+    return y
 
-# Créer le ColumnTransformer
-preprocessor = ColumnTransformer(
-    transformers=[
-        ('num', numeric_transformer, numeric_features),
-        ('cat', OneHotEncoder(drop='first'), categorical_features)
-    ],
-    remainder='passthrough'
-)
+def calculate_metrics(X, y, X_test=None, y_test=None, y_orig=None, y_test_orig=None, transformation=None):
+    """
+    Calcule les métriques pour un modèle (R² ajusté, AIC, BIC, MSE test, RMSE original).
+    """
+    model = sm.OLS(y, sm.add_constant(X)).fit()
+    metrics = {
+        'r2_adj': model.rsquared_adj,
+        'aic': model.aic,
+        'bic': model.bic,
+        'model': model
+    }
+    
+    if X_test is not None and y_test is not None:
+        X_test_const = sm.add_constant(X_test)
+        y_pred = model.predict(X_test_const)
+        metrics['test_r2'] = r2_score(y_test, y_pred)
+        
+        if y_orig is not None and y_test_orig is not None:
+            y_pred_orig = inverse_transform(y_pred, transformation)
+            metrics['test_mse'] = mean_squared_error(y_test_orig, y_pred_orig)
+            metrics['test_rmse'] = np.sqrt(metrics['test_mse'])
+    
+    return metrics
 
-# Créer le pipeline complet
-pipeline = Pipeline(steps=[
-    ('preprocessor', preprocessor)
-])
+def forward_selection(X, y, X_test, y_test, p_enter=0.05):
+    """
+    Implémentation de la sélection forward.
+    """
+    features = list(X.columns)
+    selected = []
+    
+    while features:
+        best_metric = float('-inf')
+        best_feature = None
+        best_model = None
+        
+        for feature in features:
+            current_features = selected + [feature]
+            X_current = X[current_features]
+            metrics = calculate_metrics(X_current, y, X_test[current_features], y_test)
+            
+            if metrics['model'].pvalues.iloc[-1] < p_enter and metrics['test_r2'] > best_metric:
+                best_metric = metrics['test_r2']
+                best_feature = feature
+                best_model = metrics['model']
+        
+        if best_feature is None:
+            break
+            
+        selected.append(best_feature)
+        features.remove(best_feature)
+        print(f"Forward - Ajout de {best_feature} - R² test: {best_metric:.4f}")
+    
+    return selected
 
-# Ajuster le pipeline sur les données d'entraînement
-pipeline.fit(X_train)
+def backward_elimination(X, y, X_test, y_test, p_remove=0.1):
+    """
+    Implémentation de l'élimination backward.
+    """
+    features = list(X.columns)
+    
+    while features:
+        metrics = calculate_metrics(X[features], y, X_test[features], y_test)
+        model = metrics['model']
+        p_values = model.pvalues.iloc[1:]
+        max_p_value = p_values.max()
+        
+        if max_p_value > p_remove:
+            worst_feature_idx = p_values.idxmax()
+            worst_feature = features[features.index(worst_feature_idx)]
+            features.remove(worst_feature)
+            print(f"Backward - Retrait de {worst_feature} - p-value: {max_p_value:.4f}, R² test: {metrics['test_r2']:.4f}")
+        else:
+            break
+    
+    return features
 
-# Transformer les données
-X_train_transformed = pipeline.transform(X_train)
-X_test_transformed = pipeline.transform(X_test)
+def stepwise_selection(X, y, X_test, y_test, p_enter=0.05, p_remove=0.1):
+    """
+    Implémentation de la sélection stepwise bidirectionnelle.
+    """
+    features = []
+    available = list(X.columns)
+    
+    while True:
+        changed = False
+        
+        # Forward step
+        best_metric = float('-inf')
+        best_feature = None
+        
+        for feature in available:
+            current_features = features + [feature]
+            X_current = X[current_features]
+            metrics = calculate_metrics(X_current, y, X_test[current_features], y_test)
+            
+            if metrics['model'].pvalues.iloc[-1] < p_enter and metrics['test_r2'] > best_metric:
+                best_metric = metrics['test_r2']
+                best_feature = feature
+        
+        if best_feature is not None:
+            features.append(best_feature)
+            available.remove(best_feature)
+            print(f"Stepwise - Ajout de {best_feature} - R² test: {best_metric:.4f}")
+            changed = True
+        
+        # Backward step
+        if features:
+            metrics = calculate_metrics(X[features], y, X_test[features], y_test)
+            model = metrics['model']
+            p_values = model.pvalues.iloc[1:]
+            max_p_value = p_values.max()
+            
+            if max_p_value > p_remove:
+                worst_feature_idx = p_values.idxmax()
+                worst_feature = features[features.index(worst_feature_idx)]
+                features.remove(worst_feature)
+                available.append(worst_feature)
+                print(f"Stepwise - Retrait de {worst_feature} - p-value: {max_p_value:.4f}, R² test: {metrics['test_r2']:.4f}")
+                changed = True
+        
+        if not changed:
+            break
+    
+    return features
 
-# Obtenir les noms des colonnes après transformation
-feature_names = (
-    numeric_features +  # Features numériques standardisées
-    preprocessor.named_transformers_['cat'].get_feature_names_out(categorical_features).tolist()  # Features catégorielles encodées
-)
+# Appliquer les trois méthodes pour chaque label
+for file_name, df in normalized_data_converted_selected.items():
+    print(f"{'='*80}")
+    print(f"Sélection de modèles pour {file_name}")
+    print(f"{'='*80}")
+    
+    features = [col for col in df.columns if col.startswith('f_') and col in features_to_keep]
+    labels = [col for col in df.columns if col.startswith('l_')]
+    
+    df_transformed = df.copy()
+    
+    transformations = gpt_results[file_name]
+    if transformations:
+        for item in transformations:
+            label = item['label']
+            transformation = item['transformation']
+            
+            if transformation and transformation.lower() != 'none':
+                if transformation.lower() == 'log':
+                    df_transformed[label] = np.log(df[label])
+                elif transformation.lower() == 'sqrt':
+                    df_transformed[label] = np.sqrt(df[label])
+                elif transformation.lower() == 'square':
+                    df_transformed[label] = df[label] ** 2
+                elif transformation.lower() == 'cube':
+                    df_transformed[label] = df[label] ** 3
+                elif transformation.lower() == 'power4':
+                    df_transformed[label] = df[label] ** 4
+                elif transformation.lower() == 'cbrt':
+                    df_transformed[label] = np.cbrt(df[label])
+                elif transformation.lower() == 'boxcox':
+                    df_transformed[label], _ = stats.boxcox(df[label])
+    
+    for label in labels:
+        print(f"Modélisation de {label}")
+        print("-" * 40)
+        
+        X = df[features]
+        y = df_transformed[label]
+        y_orig = df[label]
+        
+        X_train, X_test, y_train, y_test, y_orig_train, y_orig_test = train_test_split(
+            X, y, y_orig, test_size=0.3, random_state=42
+        )
+        
+        transformation = next((item['transformation'] for item in transformations if item['label'] == label), None)
+        
+        print("1. Forward Selection")
+        forward_features = forward_selection(X_train, y_train, X_test, y_test)
+        forward_metrics = calculate_metrics(
+            X_train[forward_features], y_train,
+            X_test[forward_features], y_test,
+            y_orig_train, y_orig_test,
+            transformation
+        )
+        
+        print("2. Backward Elimination")
+        backward_features = backward_elimination(X_train, y_train, X_test, y_test)
+        backward_metrics = calculate_metrics(
+            X_train[backward_features], y_train,
+            X_test[backward_features], y_test,
+            y_orig_train, y_orig_test,
+            transformation
+        )
+        
+        print("3. Stepwise Selection")
+        stepwise_features = stepwise_selection(X_train, y_train, X_test, y_test)
+        stepwise_metrics = calculate_metrics(
+            X_train[stepwise_features], y_train,
+            X_test[stepwise_features], y_test,
+            y_orig_train, y_orig_test,
+            transformation
+        )
+        
+        results_data = {
+            'Méthode': ['Forward', 'Backward', 'Stepwise'],
+            'Features': [forward_features, backward_features, stepwise_features],
+            'Nombre de features': [len(forward_features), len(backward_features), len(stepwise_features)],
+            'R² ajusté (train)': [forward_metrics['r2_adj'], backward_metrics['r2_adj'], stepwise_metrics['r2_adj']],
+            'R² (test)': [forward_metrics['test_r2'], backward_metrics['test_r2'], stepwise_metrics['test_r2']],
+            'MSE (test)': [forward_metrics['test_mse'], backward_metrics['test_mse'], stepwise_metrics['test_mse']],
+            'RMSE (test)': [forward_metrics['test_rmse'], backward_metrics['test_rmse'], stepwise_metrics['test_rmse']],
+            'AIC': [forward_metrics['aic'], backward_metrics['aic'], stepwise_metrics['aic']],
+            'BIC': [forward_metrics['bic'], backward_metrics['bic'], stepwise_metrics['bic']]
+        }
+        
+        results_df = pd.DataFrame(results_data)
+        print(f"Comparaison des modèles pour {label} (après transformation):")
+        display(results_df.style
+            .format({
+                'R² ajusté (train)': '{:.4f}',
+                'R² (test)': '{:.4f}',
+                'MSE (test)': '{:.4f}',
+                'RMSE (test)': '{:.4f}',
+                'AIC': '{:.2f}',
+                'BIC': '{:.2f}'
+            })
+            .set_properties(**{'text-align': 'left'})
+            .set_table_styles([
+                {'selector': 'th', 'props': [('text-align', 'left')]},
+                {'selector': 'td', 'props': [('text-align', 'left')]}
+            ])
+            .hide(axis='index')
+        )
+        
+        best_method_idx = results_df['R² (test)'].argmax()
+        best_method = results_df.iloc[best_method_idx]
+        best_features = best_method['Features']
+        
+        print(f"Meilleur modèle ({best_method['Méthode']}) pour {label} (après transformation):")
+        best_model = calculate_metrics(
+            X_train[best_features], y_train,
+            X_test[best_features], y_test,
+            y_orig_train, y_orig_test,
+            transformation
+        )['model']
+        print(best_model.summary())
+        
+        print(f"Transformation appliquée : {transformation}")
+        print("Performances sur le jeu de test:")
+        print(f"R² test: {best_method['R² (test)']:.4f}")
+        print(f"MSE test: {best_method['MSE (test)']:.4f}")
+        print(f"RMSE test: {best_method['RMSE (test)']:.4f}")'''
 
-# Créer les DataFrames transformés
-X_train_transformed_df = pd.DataFrame(
-    X_train_transformed,
-    columns=feature_names,
-    index=X_train.index
-)
-X_test_transformed_df = pd.DataFrame(
-    X_test_transformed,
-    columns=feature_names,
-    index=X_test.index
-)
-
-# Afficher les dimensions
-print(f"Dimensions des données d'entraînement: {X_train_transformed_df.shape}")
-print(f"Dimensions des données de test: {X_test_transformed_df.shape}")
-print("-" * 40)
-
-# Vérifier les features disponibles
-print("Features disponibles dans normalized_data_converted[file_name]:")
-print(normalized_data_converted[file_name].columns.tolist())
-
-print("Features demandées (all_features):")
-print(all_features)'''))
+cells.append(nbf.v4.new_code_cell(code_cell_14))
 
 # Cellule 15: Sélection de modèles linéaires optimaux avec features centrées-réduites
-cells.append(nbf.v4.new_markdown_cell(r"""## 15. Sélection de modèles linéaires optimaux avec features centrées-réduites
+cells.append(nbf.v4.new_markdown_cell('''## 15. Sélection de modèles linéaires optimaux avec features centrées-réduites
 
 ### Objectif
 Reproduire l'analyse précédente en :
 1. Encodant les variables catégorielles en one-hot
-2. Centrant et réduisant toutes les features (numériques, polynomiales et catégorielles encodées)
+2. Centrant et réduisant toutes les features (numériques et catégorielles encodées)
 3. Sélectionnant les meilleurs modèles
 
 Cette approche permet de :
@@ -1183,10 +1527,10 @@ Cette approche permet de :
 - Faciliter l'interprétation des coefficients
 - Améliorer la stabilité numérique des calculs
 - Traiter correctement les variables catégorielles
-- Capturer les relations non-linéaires via les features polynomiales créées dans la cellule 13.5
-"""))
+'''))
 
-cells.append(nbf.v4.new_code_cell(r"""from sklearn.preprocessing import StandardScaler, OneHotEncoder
+# Cellule de code 15
+code_cell_15 = '''from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 
@@ -1194,34 +1538,19 @@ from sklearn.pipeline import Pipeline
 best_features_dict = {}
 
 # Appliquer les trois méthodes pour chaque label avec features centrées-réduites
-for file_name, df in normalized_data_converted.items():
+for file_name, df in normalized_data_converted_selected.items():
     print(f"{'='*80}")
     print(f"Sélection de modèles avec features centrées-réduites pour {file_name}")
     print(f"{'='*80}")
 
-    # Identifier les features polynomiales créées dans la cellule 13.5
-    polynomial_features = []
-    for (fname, label), results in polynomial_analysis_results.items():
-        if fname == file_name:
-            polynomial_features.extend(results['new_columns'])
-    
-    # Identifier les features originales
-    original_features = [col for col in df.columns if col.startswith('f_') and col not in polynomial_features]
-    
-    # Combiner toutes les features en évitant les doublons
-    all_features = list(set(original_features + polynomial_features))
-    
-    # Identifier les labels
+    features = [col for col in df.columns if col.startswith('f_') and col in features_to_keep]
     labels = [col for col in df.columns if col.startswith('l_')]
 
-    # Identifier les features numériques et catégorielles parmi les features originales
-    numeric_features = [f for f in original_features if df[f].dtype in ['int64', 'float64']]
-    categorical_features = [f for f in original_features if df[f].dtype.name == 'category']
+    numeric_features = [f for f in features if df[f].dtype in ['int64', 'float64']]
+    categorical_features = [f for f in features if df[f].dtype.name == 'category']
 
-    # Créer un DataFrame pour les labels transformés
     df_transformed = df.copy()
 
-    # Appliquer les transformations recommandées par GPT
     transformations = gpt_results[file_name]
     if transformations:
         for item in transformations:
@@ -1248,44 +1577,30 @@ for file_name, df in normalized_data_converted.items():
         print(f"Modélisation de {label}")
         print("-" * 40)
 
-        # Vérifier que toutes les features existent dans le DataFrame
-        missing_features = [f for f in all_features if f not in df.columns]
-        if missing_features:
-            print(f"Attention: Les features suivantes sont manquantes dans le DataFrame:")
-            for f in missing_features:
-                print(f"- {f}")
-            print("Ces features seront ignorées dans l'analyse.")
-            all_features = [f for f in all_features if f in df.columns]
-
-        # Séparer les données en train/test
-        X = df[all_features]
+        X = df[features]
         y = df_transformed[label]
-        y_orig = df[label]  # Valeurs originales pour le RMSE
+        y_orig = df[label]
 
         X_train, X_test, y_train, y_test, y_orig_train, y_orig_test = train_test_split(
             X, y, y_orig, test_size=0.3, random_state=42
         )
 
-        # Créer le préprocesseur pour le one-hot encoding et la standardisation
         preprocessor = ColumnTransformer(
             transformers=[
-                ('num', StandardScaler(), numeric_features + polynomial_features),  # Standardiser les features numériques et polynomiales
+                ('num', StandardScaler(), numeric_features),
                 ('cat', OneHotEncoder(drop='first'), categorical_features)
             ],
             remainder='passthrough'
         )
 
-        # Appliquer le préprocessing
         X_train_processed = preprocessor.fit_transform(X_train)
         X_test_processed = preprocessor.transform(X_test)
 
-        # Récupérer les noms des features après one-hot encoding
         feature_names = (
-            numeric_features + polynomial_features +  # Features numériques et polynomiales standardisées
-            preprocessor.named_transformers_['cat'].get_feature_names_out(categorical_features).tolist()  # Features catégorielles encodées
+            numeric_features +
+            preprocessor.named_transformers_['cat'].get_feature_names_out(categorical_features).tolist()
         )
 
-        # Convertir en DataFrame
         X_train_scaled = pd.DataFrame(
             X_train_processed,
             columns=feature_names,
@@ -1297,7 +1612,6 @@ for file_name, df in normalized_data_converted.items():
             index=X_test.index
         )
 
-        # Récupérer la transformation appliquée pour ce label
         transformation = next((item['transformation'] for item in transformations if item['label'] == label), None)
 
         print("1. Forward Selection")
@@ -1327,7 +1641,6 @@ for file_name, df in normalized_data_converted.items():
             transformation
         )
 
-        # Créer un tableau comparatif des résultats
         results_data = {
             'Méthode': ['Forward', 'Backward', 'Stepwise'],
             'Features': [forward_features, backward_features, stepwise_features],
@@ -1359,12 +1672,10 @@ for file_name, df in normalized_data_converted.items():
             .hide(axis='index')
         )
 
-        # Afficher les coefficients du meilleur modèle (basé sur le RMSE test)
-        best_method_idx = results_df['RMSE (test)'].argmin()  # Changé de R² à RMSE
+        best_method_idx = results_df['RMSE (test)'].argmin()
         best_method = results_df.iloc[best_method_idx]
         best_features = best_method['Features']
 
-        # Stocker les meilleures variables pour ce label
         best_features_dict[(file_name, label)] = {
             'features': best_features,
             'transformation': transformation,
@@ -1385,27 +1696,23 @@ for file_name, df in normalized_data_converted.items():
         )['model']
         print(best_model.summary())
 
-        # Afficher la transformation appliquée et les performances
         print(f"Transformation appliquée : {transformation}")
         print("Performances sur le jeu de test:")
         print(f"R² test: {best_method['R² (test)']:.4f}")
         print(f"MSE test: {best_method['MSE (test)']:.4f}")
         print(f"RMSE test: {best_method['RMSE (test)']:.4f}")
 
-        # Afficher les coefficients standardisés avec leur interprétation
-        print("Coefficients standardisés:")
         coef_df = pd.DataFrame({
             'Feature': best_features,
-            'Coefficient': best_model.params[1:],  # Ignorer l'intercept
+            'Coefficient': best_model.params[1:],
             'Std Error': best_model.bse[1:],
             't-value': best_model.tvalues[1:],
             'p-value': best_model.pvalues[1:]
         })
 
-        # Ajouter une colonne d'interprétation
         coef_df['Interprétation'] = coef_df.apply(lambda row: 
             f"Une augmentation d'un écart-type de {row['Feature']} est associée à une {'augmentation' if row['Coefficient'] > 0 else 'diminution'} de {abs(row['Coefficient']):.4f} unités de {label}"
-            if row['Feature'] in numeric_features + polynomial_features
+            if row['Feature'] in numeric_features
             else f"La catégorie {row['Feature']} est associée à une {'augmentation' if row['Coefficient'] > 0 else 'diminution'} de {abs(row['Coefficient']):.4f} unités de {label} par rapport à la catégorie de référence",
             axis=1
         )
@@ -1423,38 +1730,237 @@ for file_name, df in normalized_data_converted.items():
                 {'selector': 'td', 'props': [('text-align', 'left')]}
             ])
             .hide(axis='index')
-        )
-        
-        # Afficher les features polynomiales sélectionnées
-        polynomial_features_selected = [f for f in best_features if f in polynomial_features]
-        if polynomial_features_selected:
-            print("\\nFeatures polynomiales sélectionnées:")
-            for feature in polynomial_features_selected:
-                print(f"- {feature}")
-                
-            # Afficher les informations sur les features polynomiales sélectionnées
-            print("\\nInformations sur les features polynomiales sélectionnées:")
-            for (fname, lbl), results in polynomial_analysis_results.items():
-                if fname == file_name:
-                    for orig_feature in results['features']:
-                        for poly_feature in polynomial_features_selected:
-                            if poly_feature.startswith(orig_feature):
-                                print(f"- {poly_feature} (transformée de {orig_feature})")
-                                print(f"  Corrélation originale: {results['correlations'][orig_feature]:.4f}")"""))
+        )'''
 
-# Cellule 16: Entraînement avec scikit-learn
-cells.append(nbf.v4.new_markdown_cell('''## 16. Entraînement avec scikit-learn
+cells.append(nbf.v4.new_code_cell(code_cell_15))
+
+# Cellule 16: Analyse des résultats et visualisation des modèles
+cells.append(nbf.v4.new_markdown_cell('''## 16. Analyse des résultats et visualisation des modèles
 
 ### Objectif
-Entraîner un modèle linéaire avec scikit-learn en utilisant :
-1. Les meilleures variables sélectionnées dans la cellule 10 (features originales)
-2. Les features polynomiales créées dans la cellule 13.5
-3. Cross-validation pour une meilleure estimation des performances
-4. Pipeline complet avec preprocessing (StandardScaler et OneHotEncoder)
-5. Comparaison avec le meilleur modèle précédent
+Analyser en détail les résultats des modèles sélectionnés :
+1. Comparer les performances des différents modèles
+2. Visualiser les prédictions vs réalité
+3. Analyser les résidus
+4. Identifier les features les plus importantes
+5. Créer des visualisations interactives
 '''))
 
-cells.append(nbf.v4.new_code_cell('''from sklearn.linear_model import LinearRegression
+# Cellule de code 16
+code_cell_16 = '''import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import seaborn as sns
+from scipy import stats
+from statsmodels.stats.diagnostic import het_breuschpagan  # Ajout de l'import
+
+def visualize_model_results(X_train, X_test, y_train, y_test, y_pred_train, y_pred_test, 
+                          model, features, label, transformation=None):
+    """
+    Crée un ensemble de visualisations pour analyser les résultats d'un modèle.
+    """
+    # 1. Prédictions vs Réalité
+    fig1 = make_subplots(rows=1, cols=2, subplot_titles=('Train', 'Test'))
+    
+    fig1.add_trace(
+        go.Scatter(x=y_train, y=y_pred_train, mode='markers',
+                  name='Prédictions', marker=dict(color='blue', opacity=0.6)),
+        row=1, col=1
+    )
+    fig1.add_trace(
+        go.Scatter(x=[y_train.min(), y_train.max()],
+                  y=[y_train.min(), y_train.max()],
+                  mode='lines', name='y=x', line=dict(color='red', dash='dash')),
+        row=1, col=1
+    )
+    
+    fig1.add_trace(
+        go.Scatter(x=y_test, y=y_pred_test, mode='markers',
+                  name='Prédictions', marker=dict(color='green', opacity=0.6)),
+        row=1, col=2
+    )
+    fig1.add_trace(
+        go.Scatter(x=[y_test.min(), y_test.max()],
+                  y=[y_test.min(), y_test.max()],
+                  mode='lines', name='y=x', line=dict(color='red', dash='dash')),
+        row=1, col=2
+    )
+    
+    fig1.update_layout(
+        title=f'Prédictions vs Réalité pour {label}' + 
+              (f' (après transformation {transformation})' if transformation else ''),
+        showlegend=False,
+        height=500
+    )
+    fig1.update_xaxes(title_text='Valeurs réelles')
+    fig1.update_yaxes(title_text='Prédictions')
+    
+    # 2. Analyse des résidus
+    residus_train = y_train - y_pred_train
+    residus_test = y_test - y_pred_test
+    
+    fig2 = make_subplots(rows=2, cols=2,
+                        subplot_titles=('Distribution des résidus (Train)',
+                                      'Distribution des résidus (Test)',
+                                      'Résidus vs Prédictions (Train)',
+                                      'Résidus vs Prédictions (Test)'))
+    
+    fig2.add_trace(
+        go.Histogram(x=residus_train, name='Train',
+                    marker=dict(color='blue', opacity=0.6)),
+        row=1, col=1
+    )
+    fig2.add_trace(
+        go.Histogram(x=residus_test, name='Test',
+                    marker=dict(color='green', opacity=0.6)),
+        row=1, col=2
+    )
+    
+    fig2.add_trace(
+        go.Scatter(x=y_pred_train, y=residus_train,
+                  mode='markers', name='Train',
+                  marker=dict(color='blue', opacity=0.6)),
+        row=2, col=1
+    )
+    fig2.add_trace(
+        go.Scatter(x=y_pred_test, y=residus_test,
+                  mode='markers', name='Test',
+                  marker=dict(color='green', opacity=0.6)),
+        row=2, col=2
+    )
+    
+    fig2.update_layout(
+        title='Analyse des résidus',
+        showlegend=False,
+        height=800
+    )
+    
+    # 3. Importance des features
+    coef = pd.DataFrame({
+        'Feature': features,
+        'Coefficient': model.params[1:],
+        'Abs_Coefficient': abs(model.params[1:]),
+        'P_Value': model.pvalues[1:]
+    }).sort_values('Abs_Coefficient', ascending=True)
+    
+    fig3 = go.Figure()
+    fig3.add_trace(
+        go.Bar(
+            y=coef['Feature'],
+            x=coef['Coefficient'],
+            orientation='h',
+            marker=dict(
+                color=coef['Coefficient'].apply(
+                    lambda x: 'red' if x < 0 else 'blue'
+                ),
+                opacity=0.6
+            )
+        )
+    )
+    
+    fig3.update_layout(
+        title='Importance des features (coefficients standardisés)',
+        xaxis_title='Coefficient',
+        yaxis_title='Feature',
+        height=max(400, len(features) * 20)
+    )
+    
+    fig1.show()
+    fig2.show()
+    fig3.show()
+    
+    print("Tests statistiques sur les résidus:")
+    print("\\nJeu d'entraînement:")
+    print(f"Test de normalité (Shapiro-Wilk): p-value = {stats.shapiro(residus_train)[1]:.4f}")
+    # Correction du test de Breusch-Pagan
+    bp_test = het_breuschpagan(residus_train, sm.add_constant(X_train))
+    print(f"Test d'homoscédasticité (Breusch-Pagan): p-value = {bp_test[1]:.4f}")
+    
+    print("\\nJeu de test:")
+    print(f"Test de normalité (Shapiro-Wilk): p-value = {stats.shapiro(residus_test)[1]:.4f}")
+    # Correction du test de Breusch-Pagan
+    bp_test = het_breuschpagan(residus_test, sm.add_constant(X_test))
+    print(f"Test d'homoscédasticité (Breusch-Pagan): p-value = {bp_test[1]:.4f}")
+
+# Analyser chaque modèle
+for (file_name, label), best_model_info in best_features_dict.items():
+    print(f"{'='*80}")
+    print(f"Analyse du modèle pour {label} dans {file_name}")
+    print(f"{'='*80}")
+    
+    df = normalized_data_converted_selected[file_name]
+    features = best_model_info['features']
+    transformation = best_model_info['transformation']
+    
+    X = df[features]
+    y = df[label]
+    if transformation and transformation.lower() != 'none':
+        if transformation.lower() == 'log':
+            y = np.log(y)
+        elif transformation.lower() == 'sqrt':
+            y = np.sqrt(y)
+        elif transformation.lower() == 'square':
+            y = y ** 2
+        elif transformation.lower() == 'cube':
+            y = y ** 3
+        elif transformation.lower() == 'power4':
+            y = y ** 4
+        elif transformation.lower() == 'cbrt':
+            y = np.cbrt(y)
+        elif transformation.lower() == 'boxcox':
+            y, _ = stats.boxcox(y)
+    
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.3, random_state=42
+    )
+    
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
+    X_train_scaled = pd.DataFrame(X_train_scaled, columns=features, index=X_train.index)
+    X_test_scaled = pd.DataFrame(X_test_scaled, columns=features, index=X_test.index)
+    
+    model = sm.OLS(y_train, sm.add_constant(X_train_scaled)).fit()
+    
+    y_pred_train = model.predict(sm.add_constant(X_train_scaled))
+    y_pred_test = model.predict(sm.add_constant(X_test_scaled))
+    
+    visualize_model_results(
+        X_train_scaled, X_test_scaled,
+        y_train, y_test,
+        y_pred_train, y_pred_test,
+        model, features, label,
+        transformation
+    )'''
+
+cells.append(nbf.v4.new_code_cell(code_cell_16))
+
+# Cellule 16: Stockage des meilleurs modèles et entraînement scikit-learn
+cells.append(nbf.v4.new_markdown_cell('''## 16. Stockage des meilleurs modèles et entraînement scikit-learn
+
+### Objectif
+Cette cellule permet de :
+1. Stocker les meilleurs modèles identifiés dans les cellules précédentes (14 et 15) dans un dictionnaire `best_features_dict`
+2. Utiliser ces modèles pour entraîner des modèles scikit-learn avec cross-validation
+3. Comparer les performances entre les modèles statsmodels et scikit-learn
+
+Le dictionnaire `best_features_dict` contient pour chaque paire (fichier, label) :
+- Les features sélectionnées
+- La transformation appliquée au label
+- La méthode de sélection utilisée
+- Les métriques de performance
+
+Cette étape est cruciale car elle permet de :
+1. Conserver les résultats des meilleurs modèles
+2. Faciliter leur réutilisation dans les analyses suivantes
+3. Comparer les performances entre les différentes approches
+4. Avoir une trace claire des choix effectués
+5. Valider les modèles avec cross-validation
+'''))
+
+# Cellule de code 16
+code_cell_16 = '''from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import cross_val_score, KFold
 from sklearn.metrics import r2_score, mean_squared_error
 from sklearn.pipeline import Pipeline
@@ -1509,47 +2015,37 @@ for (file_name, label), best_model_info in best_features_dict.items():
     print(f"{'='*80}")
     
     # Récupérer les données
-    df = normalized_data_converted[file_name]
-    features = best_model_info['features']  # Features sélectionnées dans la cellule 10
+    df = normalized_data_converted_selected[file_name]
+    features = best_model_info['features']
     transformation = best_model_info['transformation']
     
-    # Identifier les features polynomiales créées dans la cellule 13.5
-    polynomial_features = []
-    for (fname, lbl), results in polynomial_analysis_results.items():
-        if fname == file_name:
-            polynomial_features.extend(results['new_columns'])
-    
-    # Identifier les features polynomiales sélectionnées parmi les features de la cellule 10
-    polynomial_features_selected = [f for f in features if f in polynomial_features]
-    original_features = [f for f in features if f not in polynomial_features]
-    
-    print(f"Features originales sélectionnées (cellule 10): {len(original_features)}")
-    print(f"Features polynomiales sélectionnées (cellule 13.5): {len(polynomial_features_selected)}")
-    
-    # Identifier les features numériques et catégorielles parmi les features originales
+    # Identifier les features numériques et catégorielles
     numeric_features = []
     categorical_features = []
     onehot_features = {}  # Pour regrouper les features one-hot par variable d'origine
-    
-    for f in original_features:
+    print(features)
+    for f in features:
         if f in df.columns:  # Feature directe du DataFrame
+            print("test")
+            print(f)
             if df[f].dtype in ['int64', 'float64']:
                 numeric_features.append(f)
             elif df[f].dtype.name == 'category':
                 categorical_features.append(f)
         else:  # Feature issue du one-hot encoding
-            # Extraire le nom de la variable catégorielle d'origine
-            base_feature = '_'.join(f.split('_')[:-1])
+            # Extraire le nom de la variable catégorielle d'origine en enlevant le dernier underscore et tout ce qui suit
+            base_feature = '_'.join(f.split('_')[:-1])  # ex: 'f_orientation' de 'f_orientation_3'
             if base_feature not in onehot_features:
                 onehot_features[base_feature] = []
+                
             onehot_features[base_feature].append(f)
     
     # Ajouter les variables catégorielles d'origine aux features catégorielles
     categorical_features.extend(onehot_features.keys())
     
     # Préparer les données
-    new_features = remap_features(original_features, onehot_features)
-    X = df[new_features + polynomial_features_selected]  # Combiner features originales et polynomiales
+    new_features = remap_features(features, onehot_features)
+    X = df[new_features]
     y_orig = df[label]  # Valeurs originales
     y = y_orig.copy()   # Valeurs à transformer
     
@@ -1573,7 +2069,7 @@ for (file_name, label), best_model_info in best_features_dict.items():
     # Créer le préprocesseur
     # 1. on repère d'abord les vraies variables catégorielles directes
     direct_cat = [
-        f for f in original_features 
+        f for f in features 
         if (f in df.columns and df[f].dtype.name == 'category')
            and f not in onehot_features
     ]
@@ -1583,10 +2079,6 @@ for (file_name, label), best_model_info in best_features_dict.items():
     
     # – scale des numériques
     transformers.append(('num', StandardScaler(), numeric_features))
-    
-    # – scale des features polynomiales
-    if polynomial_features_selected:
-        transformers.append(('poly', StandardScaler(), polynomial_features_selected))
     
     # – OHE "classique" des catégorielles directes
     for cat in direct_cat:
@@ -1649,10 +2141,7 @@ for (file_name, label), best_model_info in best_features_dict.items():
         'r2': r2,
         'mse': mse,
         'rmse': rmse,
-        'model': pipeline,
-        'features': features,
-        'polynomial_features': polynomial_features_selected,
-        'original_features': original_features
+        'model': pipeline
     }
     
     # Comparaison avec le modèle précédent
@@ -1673,9 +2162,7 @@ for (file_name, label), best_model_info in best_features_dict.items():
     print("Coefficients du modèle:")
     
     # Obtenir directement les noms des colonnes post-prétraitement
-    feature_names = pipeline \
-       .named_steps['preprocessor'] \
-       .get_feature_names_out()
+    feature_names = pipeline.named_steps['preprocessor'].get_feature_names_out()
     
     coef_df = pd.DataFrame({
        'Feature':     feature_names,
@@ -1690,185 +2177,176 @@ for (file_name, label), best_model_info in best_features_dict.items():
             {'selector': 'td', 'props': [('text-align', 'left')]}
         ])
         .hide(axis='index')
-    )
-    
-    # Afficher les features polynomiales utilisées
-    if polynomial_features_selected:
-        print("\\nFeatures polynomiales utilisées:")
-        for feature in polynomial_features_selected:
-            print(f"- {feature}")
-            
-        # Afficher les informations sur les features polynomiales sélectionnées
-        print("\\nInformations sur les features polynomiales sélectionnées:")
-        for (fname, lbl), results in polynomial_analysis_results.items():
-            if fname == file_name:
-                for orig_feature in results['features']:
-                    for poly_feature in polynomial_features_selected:
-                        if poly_feature.startswith(orig_feature):
-                            print(f"- {poly_feature} (transformée de {orig_feature})")
-                            print(f"  Corrélation originale: {results['correlations'][orig_feature]:.4f}")'''))
+    )'''
 
-# Cellule 17: Analyse du meilleur modèle
-cells.append(nbf.v4.new_markdown_cell('''## 17. Analyse du meilleur modèle
+cells.append(nbf.v4.new_code_cell(code_cell_16))
+
+# Cellule 17: Analyse des résultats et visualisation des modèles
+cells.append(nbf.v4.new_markdown_cell('''## 17. Analyse des résultats et visualisation des modèles
 
 ### Objectif
-Analyser en détail le meilleur modèle identifié dans les cellules précédentes, en se concentrant sur :
-1. L'importance des features (originales et polynomiales)
-2. L'interprétation des coefficients
-3. La visualisation des relations non-linéaires
-4. Les prédictions et les résidus
-
-Le modèle analysé est celui qui a obtenu les meilleures performances parmi tous les modèles testés dans les cellules précédentes.
+Analyser en détail les résultats des modèles sélectionnés :
+1. Comparer les performances des différents modèles
+2. Visualiser les prédictions vs réalité
+3. Analyser les résidus
+4. Identifier les features les plus importantes
+5. Créer des visualisations interactives
 '''))
 
-cells.append(nbf.v4.new_code_cell('''import matplotlib.pyplot as plt
+# Cellule de code 17
+code_cell_17 = '''import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import seaborn as sns
 from scipy import stats
+from statsmodels.stats.diagnostic import het_breuschpagan
 
-def plot_feature_importance(model, feature_names):
+def visualize_sklearn_results(X, y, y_pred, pipeline, label, transformation=None):
     """
-    Affiche l'importance des features basée sur les coefficients standardisés.
+    Crée un ensemble de visualisations pour analyser les résultats d'un modèle scikit-learn.
     """
-    coefs = model.named_steps['regressor'].coef_
-    importance = pd.DataFrame({
-        'Feature': feature_names,
-        'Importance': np.abs(coefs)
-    }).sort_values('Importance', ascending=False)
+    # 1. Prédictions vs Réalité
+    fig1 = go.Figure()
     
-    plt.figure(figsize=(10, 6))
-    sns.barplot(x='Importance', y='Feature', data=importance)
-    plt.title('Importance des features (coefficients standardisés)')
-    plt.tight_layout()
-    plt.show()
-
-def plot_residuals(y_true, y_pred, label):
-    """
-    Affiche les graphiques de diagnostic des résidus.
-    """
-    residuals = y_true - y_pred
+    fig1.add_trace(
+        go.Scatter(x=y, y=y_pred, mode='markers',
+                  name='Prédictions', marker=dict(color='blue', opacity=0.6))
+    )
+    fig1.add_trace(
+        go.Scatter(x=[y.min(), y.max()],
+                  y=[y.min(), y.max()],
+                  mode='lines', name='y=x', line=dict(color='red', dash='dash'))
+    )
     
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-    fig.suptitle(f'Analyse des résidus - {label}')
-    
-    # Histogramme des résidus
-    sns.histplot(residuals, kde=True, ax=axes[0, 0])
-    axes[0, 0].set_title('Distribution des résidus')
-    axes[0, 0].axvline(x=0, color='r', linestyle='--')
-    
-    # QQ-plot
-    stats.probplot(residuals, dist="norm", plot=axes[0, 1])
-    axes[0, 1].set_title('QQ-plot des résidus')
-    
-    # Résidus vs Prédictions
-    axes[1, 0].scatter(y_pred, residuals, alpha=0.5)
-    axes[1, 0].axhline(y=0, color='r', linestyle='--')
-    axes[1, 0].set_title('Résidus vs Prédictions')
-    axes[1, 0].set_xlabel('Prédictions')
-    axes[1, 0].set_ylabel('Résidus')
-    
-    # Résidus vs Observations
-    axes[1, 1].scatter(y_true, residuals, alpha=0.5)
-    axes[1, 1].axhline(y=0, color='r', linestyle='--')
-    axes[1, 1].set_title('Résidus vs Observations')
-    axes[1, 1].set_xlabel('Observations')
-    axes[1, 1].set_ylabel('Résidus')
-    
-    plt.tight_layout()
-    plt.show()
-
-def plot_nonlinear_relationships(df, features, label, model):
-    """
-    Affiche les relations non-linéaires entre les features polynomiales et le label.
-    """
-    for feature in features:
-        if any(trans in feature for trans in ['_log', '_sqrt', '_cbrt', '_square', '_cube', '_power4']):
-            plt.figure(figsize=(10, 6))
-            plt.scatter(df[feature], df[label], alpha=0.5, label='Données')
-            
-            # Trier les valeurs pour une meilleure visualisation
-            sorted_idx = np.argsort(df[feature])
-            plt.plot(df[feature].iloc[sorted_idx], 
-                    model.predict(df)[sorted_idx], 
-                    color='red', 
-                    label='Prédictions')
-            
-            plt.title(f'Relation entre {feature} et {label}')
-            plt.xlabel(feature)
-            plt.ylabel(label)
-            plt.legend()
-            plt.tight_layout()
-            plt.show()
-
-# Analyser chaque meilleur modèle
-for (file_name, label), model_info in sklearn_results.items():
-    print(f"{'='*80}")
-    print(f"Analyse du meilleur modèle pour {file_name} - {label}")
-    print(f"{'='*80}")
-    
-    # Récupérer les données
-    df = normalized_data_converted[file_name]
-    model = model_info['model']
-    features = model_info['features']  # Toutes les features du meilleur modèle
-    polynomial_features = model_info['polynomial_features']
-    original_features = model_info['original_features']
-    
-    print(f"Nombre total de features utilisées: {len(features)}")
-    print(f"- Features originales: {len(original_features)}")
-    print(f"- Features polynomiales: {len(polynomial_features)}")
-    
-    # Obtenir les noms des features après preprocessing
-    feature_names = model.named_steps['preprocessor'].get_feature_names_out()
-    
-    # 1. Importance des features
-    print("1. Importance des features:")
-    plot_feature_importance(model, feature_names)
+    fig1.update_layout(
+        title=f'Prédictions vs Réalité pour {label}' + 
+              (f' (après transformation {transformation})' if transformation else ''),
+        xaxis_title='Valeurs réelles',
+        yaxis_title='Prédictions',
+        showlegend=True,
+        height=500
+    )
     
     # 2. Analyse des résidus
-    print("2. Analyse des résidus:")
-    y_pred = model.predict(df[features])
-    y_true = df[label]
-    plot_residuals(y_true, y_pred, label)
+    residus = y - y_pred
     
-    # 3. Relations non-linéaires
-    if polynomial_features:
-        print("3. Relations non-linéaires:")
-        plot_nonlinear_relationships(df, polynomial_features, label, model)
+    fig2 = make_subplots(rows=1, cols=2,
+                        subplot_titles=('Distribution des résidus',
+                                      'Résidus vs Prédictions'))
     
-    # 4. Statistiques des résidus
-    residuals = y_true - y_pred
-    print("4. Statistiques des résidus:")
-    print(f"Moyenne des résidus: {residuals.mean():.4f}")
-    print(f"Écart-type des résidus: {residuals.std():.4f}")
-    print(f"Skewness des résidus: {stats.skew(residuals):.4f}")
-    print(f"Kurtosis des résidus: {stats.kurtosis(residuals):.4f}")
+    fig2.add_trace(
+        go.Histogram(x=residus, name='Résidus',
+                    marker=dict(color='blue', opacity=0.6)),
+        row=1, col=1
+    )
     
-    # 5. Test de normalité des résidus
-    _, p_value = stats.normaltest(residuals)
-    print(f"Test de normalité des résidus (p-value): {p_value:.4f}")
-    if p_value < 0.05:
-        print("→ Les résidus ne suivent pas une distribution normale")
-    else:
-        print("→ Les résidus suivent une distribution normale")
-        
-    # 6. Afficher les coefficients avec leur interprétation
-    print("6. Coefficients du modèle:")
-    coef_df = pd.DataFrame({
+    fig2.add_trace(
+        go.Scatter(x=y_pred, y=residus,
+                  mode='markers', name='Résidus',
+                  marker=dict(color='blue', opacity=0.6)),
+        row=1, col=2
+    )
+    
+    fig2.update_layout(
+        title='Analyse des résidus',
+        showlegend=False,
+        height=400
+    )
+    
+    # 3. Importance des features
+    feature_names = pipeline.named_steps['preprocessor'].get_feature_names_out()
+    coef = pd.DataFrame({
         'Feature': feature_names,
-        'Coefficient': model.named_steps['regressor'].coef_,
-        'Type': ['Polynomiale' if any(trans in f for trans in ['_log', '_sqrt', '_cbrt', '_square', '_cube', '_power4']) else 'Originale' for f in feature_names]
-    })
+        'Coefficient': pipeline.named_steps['regressor'].coef_,
+        'Abs_Coefficient': abs(pipeline.named_steps['regressor'].coef_)
+    }).sort_values('Abs_Coefficient', ascending=True)
     
-    display(coef_df.style
-        .format({'Coefficient': '{:.4f}'})
-        .set_properties(**{'text-align': 'left'})
-        .set_table_styles([
-            {'selector': 'th', 'props': [('text-align', 'left')]},
-            {'selector': 'td', 'props': [('text-align', 'left')]}
-        ])
-        .hide(axis='index')
-    )'''))
+    fig3 = go.Figure()
+    fig3.add_trace(
+        go.Bar(
+            y=coef['Feature'],
+            x=coef['Coefficient'],
+            orientation='h',
+            marker=dict(
+                color=coef['Coefficient'].apply(
+                    lambda x: 'red' if x < 0 else 'blue'
+                ),
+                opacity=0.6
+            )
+        )
+    )
+    
+    fig3.update_layout(
+        title='Importance des features (coefficients standardisés)',
+        xaxis_title='Coefficient',
+        yaxis_title='Feature',
+        height=max(400, len(feature_names) * 20)
+    )
+    
+    fig1.show()
+    fig2.show()
+    fig3.show()
+    
+    print("Tests statistiques sur les résidus:")
+    print(f"Test de normalité (Shapiro-Wilk): p-value = {stats.shapiro(residus)[1]:.4f}")
+    
+    # Test d'homoscédasticité
+    X_processed = pipeline.named_steps['preprocessor'].transform(X)
+    bp_test = het_breuschpagan(residus, sm.add_constant(X_processed))
+    print(f"Test d'homoscédasticité (Breusch-Pagan): p-value = {bp_test[1]:.4f}")
 
-# Ajouter les cellules au notebook
+# Analyser chaque modèle scikit-learn
+for (file_name, label), result in sklearn_results.items():
+    print(f"{'='*80}")
+    print(f"Analyse du modèle scikit-learn pour {label} dans {file_name}")
+    print(f"{'='*80}")
+    
+    df = normalized_data_converted_selected[file_name]
+    best_model_info = best_features_dict[(file_name, label)]
+    features = best_model_info['features']
+    transformation = best_model_info['transformation']
+    
+    # Préparer les données
+    X = df[features]
+    y_orig = df[label]
+    y = y_orig.copy()
+    
+    # Appliquer la transformation au label si nécessaire
+    if transformation and transformation.lower() != 'none':
+        if transformation.lower() == 'log':
+            y = np.log(y)
+        elif transformation.lower() == 'sqrt':
+            y = np.sqrt(y)
+        elif transformation.lower() == 'square':
+            y = y ** 2
+        elif transformation.lower() == 'cube':
+            y = y ** 3
+        elif transformation.lower() == 'power4':
+            y = y ** 4
+        elif transformation.lower() == 'cbrt':
+            y = np.cbrt(y)
+        elif transformation.lower() == 'boxcox':
+            y, _ = stats.boxcox(y)
+    
+    # Obtenir les prédictions
+    pipeline = result['model']
+    y_pred = pipeline.predict(X)
+    
+    # Visualiser les résultats
+    visualize_sklearn_results(X, y, y_pred, pipeline, label, transformation)
+    
+    # Afficher les métriques
+    print("\\nMétriques du modèle:")
+    print(f"R² (cross-validation): {result['cv_r2_mean']:.4f} ± {result['cv_r2_std']:.4f}")
+    print(f"RMSE (cross-validation): {result['cv_rmse_mean']:.4f} ± {result['cv_rmse_std']:.4f}")
+    print(f"R² (train): {result['r2']:.4f}")
+    print(f"RMSE (train): {result['rmse']:.4f}")'''
+
+cells.append(nbf.v4.new_code_cell(code_cell_17))
+
+# ... rest of the existing code ...
+
+# Sauvegarder le notebook
 nb['cells'] = cells
 
 # Sauvegarder le notebook
