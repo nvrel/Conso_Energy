@@ -37,15 +37,10 @@ ENV/
 *.log
 
 # Data files
-data/
-*.csv
-*.xlsx
-*.xls
-*.zip 
+
 
 # Checkpoints Jupyter
 .ipynb_checkpoints/
 notebooks/.ipynb_checkpoints/
 
-# Modèles sauvegardés
-notebooks/saved_models/
+
