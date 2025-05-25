@@ -43,12 +43,9 @@ data/
 *.xls
 *.zip 
 
-# Ignore les checkpoints Jupyter
+# Checkpoints Jupyter
 .ipynb_checkpoints/
 notebooks/.ipynb_checkpoints/
 
-# Ignore les modèles ML sauvegardés (joblib)
-notebooks/saved_models/*.joblib
-notebooks/saved_models/*.txt
-
-
+# Modèles sauvegardés
+notebooks/saved_models/
